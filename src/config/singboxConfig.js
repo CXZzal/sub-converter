@@ -117,7 +117,7 @@ export const SING_BOX_CONFIG_V1_11 = {
 		],
 		rules: [
 			{
-				rule_set: "geosite-geolocation-!cn",
+				rule_set: "geolocation-!cn",
 				query_type: [
 					"A",
 					"AAAA"
@@ -125,7 +125,7 @@ export const SING_BOX_CONFIG_V1_11 = {
 				server: "dns_fakeip"
 			},
 			{
-				rule_set: "geosite-geolocation-!cn",
+				rule_set: "geolocation-!cn",
 				query_type: "CNAME",
 				server: "dns_proxy"
 			},
