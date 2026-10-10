@@ -85,9 +85,30 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         return proxy.tag;
     }
 
+
     convertProxy(proxy) {
         const sanitized = { ...proxy };
         delete sanitized.udp;
+
+        // Convert Clash-style Hysteria2 port hopping to sing-box format.
+        if (sanitized.type === 'hysteria2' && sanitized.ports !== undefined) {
+            const rawPorts = Array.isArray(sanitized.ports)
+                ? sanitized.ports
+                : String(sanitized.ports).split(',');
+
+            const serverPorts = rawPorts
+                .map(port => String(port).trim())
+                .filter(Boolean)
+                .map(port => port.replace(/^(\d+)\s*-\s*(\d+)$/, '$1:$2'));
+
+            if (serverPorts.length > 0) {
+                sanitized.server_ports = serverPorts;
+                delete sanitized.server_port;
+            }
+
+            // "ports" is not a valid sing-box outbound field.
+            delete sanitized.ports;
+        }
 
         if (sanitized.alpn && sanitized.tls) {
             if (!sanitized.tls.alpn) {
@@ -101,7 +122,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         // Clash-only setting; sing-box chooses the supported packet encoding.
         delete sanitized.packet_encoding;
         delete sanitized.providers;
-
         return sanitized;
     }
 
