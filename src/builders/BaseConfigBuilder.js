@@ -370,25 +370,13 @@ export class BaseConfigBuilder {
     }
 
     addSelectors() {
-        const outbounds = this.getOutboundsList();
-        const proxyList = this.getProxyList();
+    const proxyList = this.getProxyList();
 
-        this.addAutoSelectGroup(proxyList);
-        this.addNodeSelectGroup(proxyList);
-        if (this.groupByCountry) {
-            this.addCountryGroups();
-        }
-        this.addOutboundGroups(outbounds, proxyList);
-        this.addCustomRuleGroups(proxyList);
-        this.addFallBackGroup(proxyList);
+    this.addAutoSelectGroup(proxyList);
+    this.addNodeSelectGroup(proxyList);
 
-// Ignore subscription proxy-groups.
-// The converter generates its own minimal proxy groups:
-// selector + urltest only.
-// This prevents airport groups from duplicating selectors,
-// country groups, streaming groups, and rule groups.
-this.pendingUserProxyGroups = [];
-    }
+    this.pendingUserProxyGroups = [];
+}
 
     /**
      * Merge user-defined proxy groups with system-generated ones
