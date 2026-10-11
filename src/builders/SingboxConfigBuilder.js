@@ -539,28 +539,32 @@ addSelectors() {
         this.validateOutbounds();
         this.sanitizeLegacySpecialOutbounds()
 
-// Remove duplicate generated selector/urltest groups by type + normalized tag.
-// Keep the first occurrence and preserve all ordinary proxy outbounds.
-const seenProxyGroups = new Set();
 
-this.config.outbounds = (this.config.outbounds || []).filter(outbound => {
-    if (
-        !outbound ||
-        (outbound.type !== 'selector' && outbound.type !== 'urltest')
-    ) {
-        return true;
-    }
+        // 最终强制只保留两个代理组，普通节点出站不受影响。
+        const nodeSelectTag = normalizeGroupName(this.t('outboundNames.Node Select'));
+        const autoSelectTag = normalizeGroupName(this.t('outboundNames.Auto Select'));
+        const keptGroupTags = new Set();
 
-    const tag = normalizeGroupName(outbound.tag);
-    const key = `${outbound.type}:${tag}`;
+        this.config.outbounds = (this.config.outbounds || []).filter(outbound => {
+            if (!outbound || (outbound.type !== 'selector' && outbound.type !== 'urltest')) {
+                return true;
+            }
 
-    if (!tag || seenProxyGroups.has(key)) {
-        return false;
-    }
+            const tag = normalizeGroupName(outbound.tag);
+            const allowedType = tag === nodeSelectTag
+                ? 'selector'
+                : tag === autoSelectTag
+                    ? 'urltest'
+                    : null;
 
-    seenProxyGroups.add(key);
-    return true;
-});
+            if (!allowedType || outbound.type !== allowedType || keptGroupTags.has(tag)) {
+                return false;
+            }
+
+            keptGroupTags.add(tag);
+            return true;
+        });
+
         delete this.config.outbound_providers;
 
         for (const outbound of this.config.outbounds || []) {
