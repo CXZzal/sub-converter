@@ -1,3 +1,4 @@
+
 import { SING_BOX_CONFIG, generateRuleSets, generateRules, DIRECT_DEFAULT_RULES, REJECT_ACTION_RULES } from '../config/index.js';
 import { BaseConfigBuilder } from './BaseConfigBuilder.js';
 import { deepCopy, groupProxiesByCountry } from '../utils.js';
@@ -29,11 +30,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
             if (outbound && typeof outbound === 'object') delete outbound.providers;
         }
 
-        // SFA / sing-box 1.14 uses the system TUN stack preference requested
-        // for this configuration. Keep all other template settings intact.
-        const tun = (this.config.inbounds || []).find(item => item?.type === 'tun');
-        if (tun) tun.stack = 'system';
-
         // In modern sing-box DNS rules that select a server use action=route.
         this.normalizeDnsRules();
         if (this.config?.dns?.servers?.length > 0) {
@@ -50,7 +46,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         // Ignore client-level settings from the airport subscription, because
         // those commonly contain legacy DNS/route/inbound fields.
         for (const key of [
-            'dns', 'inbounds', 'outbounds', 'outbound_providers', 'route',
+            'dns', 'outbounds', 'outbound_providers', 'route',
             'ntp', 'experimental', 'endpoints', 'services',
             'certificate_providers', 'providers'
         ]) {
@@ -84,7 +80,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
     getProxyName(proxy) {
         return proxy.tag;
     }
-
 
     convertProxy(proxy) {
         const sanitized = { ...proxy };
@@ -167,7 +162,8 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
         this.config.outbounds.unshift({
             type: 'urltest',
-            tag,interval: '30m',
+            tag,
+            interval: '30m',
             outbounds: members
         });
     }
