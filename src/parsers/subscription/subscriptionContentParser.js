@@ -30,7 +30,17 @@ export function parseSingboxJson(content) {
             );
             if (proxies.length > 0) {
                 const configOverrides = deepCopy(parsed);
-                delete configOverrides.outbounds;
+
+delete configOverrides.outbounds;
+delete configOverrides.dns;
+delete configOverrides.route;
+delete configOverrides.inbounds;
+delete configOverrides.experimental;
+delete configOverrides.ntp;
+delete configOverrides.services;
+delete configOverrides.endpoints;
+delete configOverrides.outbound_providers;
+delete configOverrides.providers;
 
                 // Extract selector/urltest outbounds and convert to Clash proxy-groups format
                 const proxyGroups = parsed.outbounds
@@ -39,7 +49,9 @@ export function parseSingboxJson(content) {
                     .filter(g => g != null);
 
                 if (proxyGroups.length > 0) {
-                    configOverrides['proxy-groups'] = proxyGroups;
+    configOverrides['proxy-groups'] = proxyGroups;
+} else {
+    delete configOverrides['proxy-groups'];
                 }
 
                 return {
@@ -124,7 +136,13 @@ export function parseClashYaml(content) {
                 .filter(p => p != null);
             if (proxies.length > 0) {
                 const configOverrides = deepCopy(parsed);
-                delete configOverrides.proxies;
+
+delete configOverrides.proxies;
+delete configOverrides.dns;
+delete configOverrides.rules;
+delete configOverrides['rule-providers'];
+delete configOverrides['proxy-groups'];
+delete configOverrides.tun;
                 return {
                     type: 'yamlConfig',
                     proxies,
@@ -171,9 +189,17 @@ export function parseSurgeIni(content) {
                         configOverrides['proxy-groups'] = proxyGroups;
                     } else {
                         delete configOverrides['proxy-groups'];
+delete configOverrides.rules;
+delete configOverrides['rule-providers'];
+delete configOverrides['proxy-groups'];
+delete configOverrides.general;
                     }
                 } else {
                     delete configOverrides['proxy-groups'];
+delete configOverrides.rules;
+delete configOverrides['rule-providers'];
+delete configOverrides['proxy-groups'];
+delete configOverrides.general;
                 }
 
                 return {
