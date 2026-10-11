@@ -167,7 +167,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
         this.config.outbounds.unshift({
             type: 'urltest',
-            tag,
+            tag,interval: '30m',
             outbounds: members
         });
     }
