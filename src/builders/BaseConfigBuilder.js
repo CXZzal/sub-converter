@@ -28,7 +28,8 @@ export class BaseConfigBuilder {
 
     async parseCustomItems() {
         const input = this.inputString || '';
-        const parsedItems = [];
+const parsedItems = [];
+const fetchErrors = [];
 
         // Import the content parser for direct input parsing
         const { parseSubscriptionContent } = await import('../parsers/subscription/subscriptionContentParser.js');
@@ -135,9 +136,11 @@ export class BaseConfigBuilder {
                             }
                         }
                     } catch (error) {
-                        console.error('Error processing HTTP subscription:', error);
-                    }
-                    continue;
+    const message = error instanceof Error ? error.message : String(error);
+    fetchErrors.push(message);
+    console.error('Error processing HTTP subscription:', message);
+}
+continue;
                 }
 
                 // Non-HTTP URLs (protocol URIs like ss://, vmess://, etc.)
@@ -173,7 +176,13 @@ export class BaseConfigBuilder {
             }
         }
 
-        return parsedItems;
+        if (parsedItems.length === 0 && this.providerUrls.length === 0 && fetchErrors.length > 0) {
+    throw new Error(
+        `Unable to fetch the subscription from the source server: ${fetchErrors.join('; ')}`
+    );
+}
+
+return parsedItems;
     }
 
     /**
