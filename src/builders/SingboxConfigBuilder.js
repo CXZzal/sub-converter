@@ -577,12 +577,13 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         this.config.route.auto_detect_interface = true;
         this.config.route.final = this.t('outboundNames.Fall Back');
 
-        // Keep the subscription TUN stack when SFA can use it.
-        // This SFA build does not include gVisor, so fall back only for gvisor.
-        const tun = (this.config.inbounds || []).find(item => item?.type === 'tun');
-        if (tun && tun.stack === 'gvisor') {
-            tun.stack = 'system';
-        }
+ // Keep the subscription TUN stack when SFA can use it.
+// This SFA build does not include gVisor.
+// Convert unsupported gvisor/mixed stack to system.
+const tun = (this.config.inbounds || []).find(item => item?.type === 'tun');
+if (tun && (tun.stack === 'gvisor' || tun.stack === 'mixed')) {
+    tun.stack = 'system';
+}
 
         // sing-box 1.14+ requires an explicit HTTP client for remote rule-set downloads.
         // Route these downloads through the same selectable proxy group as before.
