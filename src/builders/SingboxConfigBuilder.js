@@ -153,10 +153,9 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
      * manual node selector and automatic URLTest.
      */
 addSelectors() {
-    // 清理已有 selector/urltest
-    // 只生成两个组：
-    // 🚀 节点选择 (selector)
-    // ♻️ 自动选择 (urltest)
+    // 只保留两个代理组：
+    // 1. 🚀 节点选择 selector
+    // 2. ♻️ 自动选择 urltest
 
     this.config.outbounds = (this.config.outbounds || []).filter(outbound =>
         outbound &&
@@ -169,7 +168,7 @@ addSelectors() {
     this.addAutoSelectGroup(proxyList);
     this.addNodeSelectGroup(proxyList);
 
-    // 忽略机场自带 proxy-groups
+    // 删除机场自带 proxy-groups
     this.pendingUserProxyGroups = [];
 }
     addAutoSelectGroup(proxyList) {
@@ -227,62 +226,19 @@ addSelectors() {
     }
 
     addOutboundGroups(outbounds, proxyList) {
-        (outbounds || []).forEach(outbound => {
-            if (
-                outbound === this.t('outboundNames.Node Select') ||
-                REJECT_ACTION_RULES.has(outbound)
-            ) {
-                return;
-            }
-
-            if (this.hasOutboundTag(this.t(`outboundNames.${outbound}`))) return;
-
-            let members = this.buildSelectorMembers(proxyList);
-
-            if (DIRECT_DEFAULT_RULES.has(outbound)) {
-                members = ['DIRECT', ...members.filter(name => name !== 'DIRECT')];
-            }
-
-            this.config.outbounds.push({
-                type: 'selector',
-                tag: this.t(`outboundNames.${outbound}`),
-                outbounds: members
-            });
-        });
-    }
+    // 不生成 Google / Telegram / Netflix 等额外 selector
+    return;
+}
 
     addCustomRuleGroups(proxyList) {
-        if (!Array.isArray(this.customRules)) return;
-
-        this.customRules.forEach(rule => {
-            if (!rule?.name || this.hasOutboundTag(rule.name)) return;
-
-            const members = buildCustomRuleMembers({
-                proxyList,
-                translator: this.t,
-                manualGroupName: this.manualGroupName,
-                includeAutoSelect: this.includeAutoSelect && this.hasAutoSelectCandidates(proxyList),
-                includeReject: false
-            });
-
-            this.config.outbounds.push({
-                type: 'selector',
-                tag: rule.name,
-                outbounds: members
-            });
-        });
-    }
+    // 不生成额外代理组
+    return;
+}
 
     addFallBackGroup(proxyList) {
-        const tag = this.t('outboundNames.Fall Back');
-        if (this.hasOutboundTag(tag)) return;
-
-        this.config.outbounds.push({
-            type: 'selector',
-            tag,
-            outbounds: this.buildSelectorMembers(proxyList)
-        });
-    }
+    // 不生成 Fall Back
+    return;
+}
 
     addCountryGroups() {
         const proxies = this.getProxies();
