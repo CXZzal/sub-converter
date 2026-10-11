@@ -537,8 +537,30 @@ addSelectors() {
         this.config.route.default_http_client = ruleSetHttpClientTag;
 
         this.validateOutbounds();
-        this.sanitizeLegacySpecialOutbounds();
+        this.sanitizeLegacySpecialOutbounds()
 
+// Remove duplicate generated selector/urltest groups by type + normalized tag.
+// Keep the first occurrence and preserve all ordinary proxy outbounds.
+const seenProxyGroups = new Set();
+
+this.config.outbounds = (this.config.outbounds || []).filter(outbound => {
+    if (
+        !outbound ||
+        (outbound.type !== 'selector' && outbound.type !== 'urltest')
+    ) {
+        return true;
+    }
+
+    const tag = normalizeGroupName(outbound.tag);
+    const key = `${outbound.type}:${tag}`;
+
+    if (!tag || seenProxyGroups.has(key)) {
+        return false;
+    }
+
+    seenProxyGroups.add(key);
+    return true;
+});
         delete this.config.outbound_providers;
 
         for (const outbound of this.config.outbounds || []) {
