@@ -1,4 +1,3 @@
-
 import { SING_BOX_CONFIG, generateRuleSets, generateRules, DIRECT_DEFAULT_RULES, REJECT_ACTION_RULES } from '../config/index.js';
 import { BaseConfigBuilder } from './BaseConfigBuilder.js';
 import { deepCopy, groupProxiesByCountry } from '../utils.js';
