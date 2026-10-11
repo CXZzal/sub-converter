@@ -1,3 +1,4 @@
+JavaScript
 
 import { SING_BOX_CONFIG, generateRuleSets, generateRules, DIRECT_DEFAULT_RULES, REJECT_ACTION_RULES } from '../config/index.js';
 import { BaseConfigBuilder } from './BaseConfigBuilder.js';
@@ -147,6 +148,22 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
     hasAutoSelectCandidates(proxyList = this.getProxyList()) {
         return Array.isArray(proxyList) && proxyList.length > 0;
+    }
+
+    /**
+     * Keep only two generated proxy groups:
+     * manual node selector and automatic URLTest.
+     */
+    addSelectors() {
+        this.config.outbounds = (this.config.outbounds || []).filter(outbound =>
+            outbound &&
+            outbound.type !== 'selector' &&
+            outbound.type !== 'urltest'
+        );
+
+        const proxyList = this.getProxyList();
+        this.addAutoSelectGroup(proxyList);
+        this.addNodeSelectGroup(proxyList);
     }
 
     addAutoSelectGroup(proxyList) {
@@ -469,11 +486,24 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
     }
 
     buildRouteTarget(rule) {
-        if (REJECT_ACTION_RULES.has(rule?.outbound) || rule?.outbound === 'REJECT') {
+        if (
+            REJECT_ACTION_RULES.has(rule?.outbound) ||
+            rule?.outbound === 'REJECT'
+        ) {
             return { action: 'reject' };
         }
 
-        return { outbound: this.t(`outboundNames.${rule.outbound}`) };
+        if (
+            DIRECT_DEFAULT_RULES.has(rule?.outbound) ||
+            rule?.outbound === 'DIRECT' ||
+            rule?.outbound === 'direct'
+        ) {
+            return { outbound: 'DIRECT' };
+        }
+
+        return {
+            outbound: this.t('outboundNames.Node Select')
+        };
     }
 
     formatConfig() {
@@ -575,15 +605,15 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         );
 
         this.config.route.auto_detect_interface = true;
-        this.config.route.final = this.t('outboundNames.Fall Back');
+        this.config.route.final = this.t('outboundNames.Node Select');
 
- // Keep the subscription TUN stack when SFA can use it.
-// This SFA build does not include gVisor.
-// Convert unsupported gvisor/mixed stack to system.
-const tun = (this.config.inbounds || []).find(item => item?.type === 'tun');
-if (tun && (tun.stack === 'gvisor' || tun.stack === 'mixed')) {
-    tun.stack = 'system';
-}
+        // Keep the subscription TUN stack when SFA can use it.
+        // This SFA build does not include gVisor.
+        // Convert unsupported gvisor/mixed stack to system.
+        const tun = (this.config.inbounds || []).find(item => item?.type === 'tun');
+        if (tun && (tun.stack === 'gvisor' || tun.stack === 'mixed')) {
+            tun.stack = 'system';
+        }
 
         // sing-box 1.14+ requires an explicit HTTP client for remote rule-set downloads.
         // Route these downloads through the same selectable proxy group as before.
