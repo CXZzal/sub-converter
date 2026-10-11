@@ -351,69 +351,9 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
     }
 
     mergeUserProxyGroups(userGroups) {
-        if (!Array.isArray(userGroups)) return;
-
-        const proxyNames = new Set(this.getProxyList());
-
-        const groupNames = new Set(
-            (this.config.outbounds || [])
-                .filter(item => item?.type === 'selector' || item?.type === 'urltest')
-                .map(item => item.tag)
-                .filter(Boolean)
-        );
-
-        const validRefs = new Set(['DIRECT', 'direct', ...proxyNames, ...groupNames]);
-
-        userGroups.forEach(userGroup => {
-            if (!userGroup?.name) return;
-
-            const existing = (this.config.outbounds || []).find(
-                item => normalizeGroupName(item?.tag) === normalizeGroupName(userGroup.name)
-            );
-
-            const members = Array.isArray(userGroup.proxies)
-                ? userGroup.proxies.filter(name => validRefs.has(name))
-                : [];
-
-            if (existing) {
-                if (members.length) {
-                    existing.outbounds = [
-                        ...(existing.outbounds || []),
-                        ...members
-                    ].filter((name, index, all) => all.indexOf(name) === index);
-                }
-
-                if (userGroup.url && existing.type === 'urltest') {
-                    existing.url = userGroup.url;
-                }
-
-                if (typeof userGroup.interval === 'number' && existing.type === 'urltest') {
-                    existing.interval = `${userGroup.interval}s`;
-                }
-
-                delete existing.providers;
-                return;
-            }
-
-            if (!members.length) return;
-
-            const outbound = {
-                type: userGroup.type === 'url-test' ? 'urltest' : 'selector',
-                tag: userGroup.name,
-                outbounds: [...new Set(members)]
-            };
-
-            if (outbound.type === 'urltest') {
-                if (userGroup.url) outbound.url = userGroup.url;
-
-                if (typeof userGroup.interval === 'number') {
-                    outbound.interval = `${userGroup.interval}s`;
-                }
-            }
-
-            this.config.outbounds.push(outbound);
-            validRefs.add(userGroup.name);
-        });
+        // Ignore airport proxy-groups.
+        // The converter only keeps its own generated groups.
+        return;
     }
 
     validateOutbounds() {
