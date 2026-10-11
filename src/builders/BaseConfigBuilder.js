@@ -382,10 +382,12 @@ export class BaseConfigBuilder {
         this.addCustomRuleGroups(proxyList);
         this.addFallBackGroup(proxyList);
 
-        // Merge user-defined proxy-groups after system groups are created
-        if (this.pendingUserProxyGroups && this.pendingUserProxyGroups.length > 0) {
-            this.mergeUserProxyGroups(this.pendingUserProxyGroups);
-        }
+// Ignore subscription proxy-groups.
+// The converter generates its own minimal proxy groups:
+// selector + urltest only.
+// This prevents airport groups from duplicating selectors,
+// country groups, streaming groups, and rule groups.
+this.pendingUserProxyGroups = [];
     }
 
     /**
