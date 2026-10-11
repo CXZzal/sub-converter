@@ -152,18 +152,26 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
      * Keep only two generated proxy groups:
      * manual node selector and automatic URLTest.
      */
-    addSelectors() {
-        this.config.outbounds = (this.config.outbounds || []).filter(outbound =>
-            outbound &&
-            outbound.type !== 'selector' &&
-            outbound.type !== 'urltest'
-        );
+addSelectors() {
+    // 清理已有 selector/urltest
+    // 只生成两个组：
+    // 🚀 节点选择 (selector)
+    // ♻️ 自动选择 (urltest)
 
-        const proxyList = this.getProxyList();
-        this.addAutoSelectGroup(proxyList);
-        this.addNodeSelectGroup(proxyList);
-    }
+    this.config.outbounds = (this.config.outbounds || []).filter(outbound =>
+        outbound &&
+        outbound.type !== 'selector' &&
+        outbound.type !== 'urltest'
+    );
 
+    const proxyList = this.getProxyList();
+
+    this.addAutoSelectGroup(proxyList);
+    this.addNodeSelectGroup(proxyList);
+
+    // 忽略机场自带 proxy-groups
+    this.pendingUserProxyGroups = [];
+}
     addAutoSelectGroup(proxyList) {
         if (!this.includeAutoSelect) return;
 
