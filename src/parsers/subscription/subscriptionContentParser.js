@@ -178,8 +178,10 @@ export function parseSurgeIni(content) {
             if (proxies.length > 0) {
                 const configOverrides = deepCopy(parsed);
                 // Remove fields that are handled separately
-                delete configOverrides.proxies;
-
+delete configOverrides.proxies;
+delete configOverrides.rules;
+delete configOverrides['rule-providers'];
+delete configOverrides.general;
                 // Convert Surge proxy-group strings to Clash-compatible objects
                 if (Array.isArray(parsed['proxy-groups']) && parsed['proxy-groups'].length > 0) {
                     const proxyGroups = parsed['proxy-groups']
