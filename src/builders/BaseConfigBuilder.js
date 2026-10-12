@@ -93,7 +93,7 @@ const fetchErrors = [];
 
                     try {
                         const fetchResult = await fetchSubscriptionWithFormat(trimmedUrl, this.userAgent);
-                        if (fetchResult) {
+                        if (fetchResult && !fetchResult.error) {
                             const { content, format, url: originalUrl, subscriptionUserinfo } = fetchResult;
 
                             if (subscriptionUserinfo && !this.subscriptionUserinfo) {
