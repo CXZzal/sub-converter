@@ -83,6 +83,11 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
     convertProxy(proxy) {
         const sanitized = { ...proxy };
         delete sanitized.udp;
+        // Convert Clash port to sing-box server_port.
+        if (sanitized.server_port === undefined && sanitized.port !== undefined) {
+            sanitized.server_port = sanitized.port;
+        }
+        delete sanitized.port;
 
         // Convert Clash-style Hysteria2 port hopping to sing-box format.
                // Convert Clash-style Hysteria2 bandwidth fields to sing-box format.
