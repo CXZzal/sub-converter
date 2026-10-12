@@ -120,7 +120,28 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
             delete sanitized.ports;
         }
 
-        if (sanitized.alpn && sanitized.tls) {
+        // Convert Clash WebSocket transport to sing-box format.
+        if (sanitized.network === 'ws') {
+            const wsOpts = sanitized['ws-opts'] || sanitized.ws_opts || {};
+
+            sanitized.transport = {
+                ...(sanitized.transport || {}),
+                type: 'ws'
+            };
+
+            if (wsOpts.path !== undefined) {
+                sanitized.transport.path = wsOpts.path;
+            }
+
+            if (wsOpts.headers && typeof wsOpts.headers === 'object') {
+                sanitized.transport.headers = wsOpts.headers;
+            }
+
+            delete sanitized.network;
+            delete sanitized['ws-opts'];
+            delete sanitized.ws_opts;
+        }       
+ if (sanitized.alpn && sanitized.tls) {
             if (!sanitized.tls.alpn) {
                 sanitized.tls = { ...sanitized.tls, alpn: sanitized.alpn };
             }
