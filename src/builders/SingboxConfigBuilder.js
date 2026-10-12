@@ -100,6 +100,18 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
             sanitized.server_port = sanitized.port;
         }
         delete sanitized.port;
+        // Remove invalid VLESS flow values.
+        if (sanitized.type === 'vless') {
+            const flow = typeof sanitized.flow === 'string'
+                ? sanitized.flow.trim()
+                : '';
+
+            if (flow === 'xtls-rprx-vision') {
+                sanitized.flow = flow;
+            } else {
+                delete sanitized.flow;
+            }
+        }
 
         // Convert Clash-style Hysteria2 port hopping to sing-box format.
                // Convert Clash-style Hysteria2 bandwidth fields to sing-box format.
