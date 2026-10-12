@@ -141,7 +141,7 @@ export async function fetchSubscription(url, userAgent) {
         return parseSubscriptionContent(decodedText);
     } catch (error) {
         console.error('Error fetching or parsing HTTP(S) content:', error);
-        throw error;
+        return null;
     }
 }
 
