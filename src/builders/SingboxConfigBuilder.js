@@ -85,7 +85,23 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         delete sanitized.udp;
 
         // Convert Clash-style Hysteria2 port hopping to sing-box format.
-        if (sanitized.type === 'hysteria2' && sanitized.ports !== undefined) {
+               // Convert Clash-style Hysteria2 bandwidth fields to sing-box format.
+        if (sanitized.type === 'hysteria2') {
+            if (sanitized.up !== undefined) {
+                sanitized.up_mbps = Number(
+                    String(sanitized.up).replace(/[^0-9.]/g, '')
+                );
+                delete sanitized.up;
+            }
+
+            if (sanitized.down !== undefined) {
+                sanitized.down_mbps = Number(
+                    String(sanitized.down).replace(/[^0-9.]/g, '')
+                );
+                delete sanitized.down;
+            }
+        }
+ if (sanitized.type === 'hysteria2' && sanitized.ports !== undefined) {
             const rawPorts = Array.isArray(sanitized.ports)
                 ? sanitized.ports
                 : String(sanitized.ports).split(',');
