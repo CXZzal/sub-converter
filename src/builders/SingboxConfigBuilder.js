@@ -44,10 +44,22 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         // Nodes and proxy-groups are extracted separately by BaseConfigBuilder.
         // Ignore client-level settings from the airport subscription, because
         // those commonly contain legacy DNS/route/inbound fields.
-        for (const key of [
+                for (const key of [
             'dns', 'outbounds', 'outbound_providers', 'route',
             'ntp', 'experimental', 'endpoints', 'services',
-            'certificate_providers', 'providers'
+            'certificate_providers', 'providers',
+
+            // Ignore Clash client-level settings that are invalid
+            // in a sing-box configuration.
+            'port', 'socks-port', 'mixed-port', 'redir-port',
+            'tproxy-port', 'allow-lan', 'bind-address',
+            'mode', 'log-level', 'ipv6',
+            'external-controller', 'external-ui', 'external-ui-url',
+            'secret', 'profile', 'hosts', 'tun',
+            'geodata-mode', 'geodata-loader',
+            'geo-auto-update', 'geo-update-interval',
+            'unified-delay', 'tcp-concurrent',
+            'find-process-mode', 'global-client-fingerprint'
         ]) {
             delete safeOverrides[key];
         }
