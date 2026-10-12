@@ -135,6 +135,14 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
             // "ports" is not a valid sing-box outbound field.
             delete sanitized.ports;
+        // Remove invalid or missing VLESS flow values.
+        if (
+            typeof sanitized.flow !== 'string' ||
+            !sanitized.flow.trim() ||
+            ['undefined', 'null'].includes(sanitized.flow.trim().toLowerCase())
+        ) {
+            delete sanitized.flow;
+        }
         }
 
         // Convert Clash WebSocket transport to sing-box format.
