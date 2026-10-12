@@ -115,7 +115,56 @@ function detectFormat(content) {
 
     return 'unknown';
 }
+function safeHost(url) {
+    try {
+        return new URL(url).host;
+    } catch {
+        return '(invalid URL)';
+    }
+}
 
+function safePreview(value) {
+    return String(value || '')
+        .replace(/https?:\/\/[^\s"'<>]+/gi, '[URL]')
+        .replace(
+            /([?&](?:token|key|auth|password|pass|secret|sign|signature|access_token)=)[^&\s"'<>]*/gi,
+            '$1[REDACTED]'
+        )
+        .replace(/\b[A-Za-z0-9_-]{48,}\b/g, '[LONG_VALUE]')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 240);
+}
+
+async function logHttpFailure(label, url, response, userAgent) {
+    let bodyPreview = '';
+
+    try {
+        bodyPreview = safePreview(await response.text());
+    } catch {
+        bodyPreview = '(could not read response body)';
+    }
+
+    console.error(label, {
+        host: safeHost(url),
+        status: response.status,
+        statusText: response.statusText,
+        contentType: response.headers.get('content-type') || '',
+        server: response.headers.get('server') || '',
+        cfRay: response.headers.get('cf-ray') || '',
+cfCacheStatus:
+response.headers.get('cf-cache-status') || '',
+
+cfMitigated:
+response.headers.get('cf-mitigated') || '',
+
+location:
+response.headers.get('location') || '',
+        wwwAuthenticate: response.headers.get('www-authenticate') || '',
+        userAgent: userAgent || '(not set)',
+        bodyPreview: bodyPreview || '(empty response body)'
+    });
+}
 /**
  * Fetch subscription content from a URL and parse it
  * @param {string} url - The subscription URL to fetch
@@ -125,16 +174,34 @@ function detectFormat(content) {
 export async function fetchSubscription(url, userAgent) {
     try {
         const headers = new Headers();
-        if (userAgent) {
-            headers.set('User-Agent', userAgent);
-        }
+
+headers.set(
+    'User-Agent',
+    userAgent || 'ClashMetaForAndroid/2.11.12'
+);
+
+headers.set(
+    'Accept',
+    '*/*'
+);
+
+headers.set(
+    'Accept-Encoding',
+    'gzip, deflate, br'
+);
         const response = await fetch(url, {
             method: 'GET',
             headers: headers
         });
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
+    await logHttpFailure(
+        'Subscription fetch returned non-2xx response',
+        url,
+        response,
+        userAgent
+    );
+    return null;
+}
         const text = await response.text();
         const decodedText = decodeContent(text);
 
@@ -154,16 +221,38 @@ export async function fetchSubscription(url, userAgent) {
 export async function fetchSubscriptionWithFormat(url, userAgent) {
     try {
         const headers = new Headers();
-        if (userAgent) {
-            headers.set('User-Agent', userAgent);
-        }
+
+headers.set(
+    'User-Agent',
+    userAgent || 'ClashMetaForAndroid/2.11.12'
+);
+
+headers.set(
+    'Accept',
+    '*/*'
+);
+
+headers.set(
+    'Accept-Encoding',
+    'gzip, deflate, br'
+);
         const response = await fetch(url, {
             method: 'GET',
             headers: headers
         });
         if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
+    await logHttpFailure(
+        'Subscription fetch returned non-2xx response',
+        url,
+        response,
+        userAgent
+    );
+
+    return {
+        error: true,
+        status: response.status
+    };
+}
         const text = await response.text();
         const content = decodeContent(text);
         const format = detectFormat(content);
