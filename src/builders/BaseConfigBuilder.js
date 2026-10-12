@@ -177,8 +177,9 @@ continue;
         }
 
         if (parsedItems.length === 0 && this.providerUrls.length === 0 && fetchErrors.length > 0) {
-    throw new Error(
-        `Unable to fetch the subscription from the source server: ${fetchErrors.join('; ')}`
+    console.error(
+        'Subscription fetch failed:',
+        fetchErrors.join('; ')
     );
 }
 
