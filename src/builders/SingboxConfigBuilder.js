@@ -12,25 +12,36 @@ import { uniqueNames } from './helpers/groupBuilder.js';
 
 const RESERVED_OUTBOUND_TYPES = new Set(['direct', 'block', 'selector', 'urltest', 'dns']);
 
+// 像节点的对象（有 server 字段的协议）
+const PROXY_TYPES = new Set([
+    'shadowsocks', 'vmess', 'vless', 'trojan',
+    'hysteria', 'hysteria2', 'tuic', 'http', 'socks',
+    'snell', 'anytls', 'shadowtls', 'naive',
+    'wireguard', 'ssh', 'mieru'
+]);
+
 /**
- * 把 Clash/Surge 遗留字段转换成 sing-box 格式，不丢功能
+ * 全对象递归清理：字段名转换 + 无效字段剔除
  */
-function normalizeOutbound(obj) {
+function deepClean(obj) {
     if (Array.isArray(obj)) {
-        obj.forEach(normalizeOutbound);
+        obj.forEach(deepClean);
         return;
     }
     if (!obj || typeof obj !== 'object') return;
 
-    // 1) port → server_port
-    if (obj.port !== undefined && obj.server_port === undefined) {
-        obj.server_port = obj.port;
+    // 1) port 处理：只有像节点的对象才转，其他删
+    if (obj.port !== undefined) {
+        const isProxyLike = PROXY_TYPES.has(obj.type) && obj.server !== undefined;
+        if (isProxyLike && obj.server_port === undefined) {
+            obj.server_port = obj.port;
+        }
+        delete obj.port;
     }
-    delete obj.port;
 
     // 2) sni / servername → tls.server_name
     const sniValue = obj.sni || obj.servername;
-    if (sniValue) {
+    if (sniValue && PROXY_TYPES.has(obj.type)) {
         obj.tls = obj.tls || { enabled: true };
         if (!obj.tls.server_name) obj.tls.server_name = sniValue;
     }
@@ -39,7 +50,7 @@ function normalizeOutbound(obj) {
 
     // 3) skip-cert-verify / allowInsecure → tls.insecure
     const insecureValue = obj['skip-cert-verify'] ?? obj.skip_cert_verify ?? obj.allowInsecure;
-    if (insecureValue === true) {
+    if (insecureValue === true && PROXY_TYPES.has(obj.type)) {
         obj.tls = obj.tls || { enabled: true };
         obj.tls.insecure = true;
     }
@@ -47,15 +58,15 @@ function normalizeOutbound(obj) {
     delete obj.skip_cert_verify;
     delete obj.allowInsecure;
 
-    // 4) alpn（顶层）→ tls.alpn
-    if (obj.alpn && !obj.tls?.alpn) {
+    // 4) 顶层 alpn → tls.alpn
+    if (obj.alpn && PROXY_TYPES.has(obj.type) && !obj.tls?.alpn) {
         obj.tls = obj.tls || { enabled: true };
         obj.tls.alpn = Array.isArray(obj.alpn) ? obj.alpn : [obj.alpn];
         delete obj.alpn;
     }
 
-    // 5) fingerprint（顶层）→ tls.utls.fingerprint
-    if (obj.fingerprint) {
+    // 5) 顶层 fingerprint → tls.utls.fingerprint
+    if (obj.fingerprint && PROXY_TYPES.has(obj.type)) {
         obj.tls = obj.tls || { enabled: true };
         if (!obj.tls.utls) obj.tls.utls = { enabled: true };
         obj.tls.utls.fingerprint = obj.fingerprint;
@@ -68,14 +79,14 @@ function normalizeOutbound(obj) {
     }
     delete obj.alterId;
 
-    // 7) cipher → vmess 的 security
+    // 7) vmess cipher → security
     if (obj.type === 'vmess' && obj.cipher !== undefined && obj.security === undefined) {
         obj.security = obj.cipher;
     }
-    delete obj.cipher;
+    if (PROXY_TYPES.has(obj.type)) delete obj.cipher;
 
-    // 8) network 字段（Clash）→ transport
-    if (obj.network && !obj.transport) {
+    // 8) network → transport
+    if (obj.network && !obj.transport && PROXY_TYPES.has(obj.type)) {
         const n = obj.network;
         if (n === 'ws') {
             obj.transport = { type: 'ws' };
@@ -91,7 +102,7 @@ function normalizeOutbound(obj) {
         }
     }
 
-    // 9) 补全 transport 里缺的字段
+    // 9) 补 transport 缺的字段
     if (obj.transport) {
         if (obj['ws-path'] && !obj.transport.path) obj.transport.path = obj['ws-path'];
         if (obj['ws-headers'] && !obj.transport.headers) obj.transport.headers = obj['ws-headers'];
@@ -104,14 +115,14 @@ function normalizeOutbound(obj) {
     delete obj['grpc-service-name'];
     delete obj.network;
 
-    // 10) 真不能保留的：udp（sing-box 由协议决定）、tfo（不支持）
+    // 10) sing-box 不认的字段
     delete obj.udp;
     delete obj.tfo;
 
-    // 递归处理子对象
+    // 递归
     Object.keys(obj).forEach(key => {
         if (obj[key] && typeof obj[key] === 'object') {
-            normalizeOutbound(obj[key]);
+            deepClean(obj[key]);
         }
     });
 }
@@ -335,7 +346,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
     addProxyToConfig(proxy) {
         if (!proxy || !proxy.tag) return;
-        normalizeOutbound(proxy);
+        deepClean(proxy);
         this.config.outbounds = this.config.outbounds || [];
         if (this.config.outbounds.some(o => o.tag === proxy.tag)) {
             let i = 2;
@@ -528,8 +539,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
     formatConfig() {
         this.config.outbounds = this.config.outbounds || [];
 
-        this.config.outbounds.forEach(normalizeOutbound);
-
         if (!this.config.outbounds.some(o => o.tag === 'DIRECT')) {
             this.config.outbounds.push({ type: 'direct', tag: 'DIRECT' });
         }
@@ -539,6 +548,14 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
         const rules = generateRules(this.selectedRules, this.customRules);
         this.config.route = this.buildRoute(rules);
+
+        // ★ 关键：对整份 config 递归清理（不只 outbounds）
+        deepClean(this.config);
+
+        // 便于验证新代码真的跑了
+        console.log('[SB-BUILD] config built, outbounds =', this.config.outbounds.length);
+        const portLeaks = JSON.stringify(this.config).match(/"port"/g);
+        console.log('[SB-BUILD] remaining "port" fields =', portLeaks ? portLeaks.length : 0);
 
         return JSON.stringify(this.config, null, 2);
     }
