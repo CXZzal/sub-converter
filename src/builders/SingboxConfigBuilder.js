@@ -24,11 +24,9 @@ const PROXY_TYPES = new Set([
     'wireguard', 'ssh', 'mieru'
 ]);
 
-// ★★★ Global 模式开关 ★★★
-const GLOBAL_MODE = true;
-
-// ★★★ 让所有域名都走 fakeip（修 DNS 污染）★★★
-const FIX_DNS = true;
+// ★★★ 开关 ★★★
+const GLOBAL_MODE = true;   // true = 全局代理模式
+const FIX_DNS = true;       // true = 启用 DNS 防泄露
 
 function filterTopLevel(config) {
     Object.keys(config).forEach(key => {
@@ -150,29 +148,25 @@ function deepClean(obj) {
     });
 }
 
-// ★★★ 重写 DNS：所有 A/AAAA 查询都走 fakeip ★★★
+// ★★★ 1.14+ DNS 配置：使用 type: "fakeip" 定义服务器 ★★★
 function fixDns(dns) {
     if (!dns || !Array.isArray(dns.servers)) return dns;
     return {
         ...dns,
-        rules: [
-            // 1) 所有 A/AAAA 查询都返回 fakeip，后面按域名路由决定走直连还是代理
-            {
-                query_type: ['A', 'AAAA'],
-                server: 'dns_fakeip'
-            },
-            // 2) CNAME 查询走代理 DNS
-            {
-                query_type: 'CNAME',
-                server: 'dns_proxy'
-            },
-            // 3) 其他类型（HTTPS/SVCB 等）走代理 DNS，避免被污染
-            {
-                query_type: ['HTTPS', 'SVCB'],
-                server: 'dns_proxy'
-            }
+        servers: [
+            { type: 'fakeip', tag: 'dns_fakeip', inet4_range: '198.18.0.0/15' },
+            { type: 'udp', tag: 'dns_direct', server: '223.5.5.5' },
+            { type: 'tcp', tag: 'dns_proxy', server: '1.1.1.1' }
         ],
-        final: 'dns_proxy'
+        rules: [
+            // 所有 A/AAAA 查询返回 fakeip
+            { query_type: ['A', 'AAAA'], server: 'dns_fakeip' },
+            // CNAME 查询走代理 DNS
+            { query_type: 'CNAME', server: 'dns_proxy' },
+            // HTTPS/SVCB 走代理 DNS
+            { query_type: ['HTTPS', 'SVCB'], server: 'dns_proxy' }
+        ],
+        final: 'dns_direct'
     };
 }
 
@@ -560,6 +554,10 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         route.rules = [];
         this._seenRuleSets = new Set();
 
+        // ★★★ 1.14+ 在 TUN 上处理 DNS，route 层无需再劫持 ★★★
+        // 拦截 STUN 防 WebRTC 泄露
+        route.rules.push({ protocol: 'stun', action: 'reject' });
+
         if (GLOBAL_MODE) {
             this._addRuleSet(
                 route.rule_set,
@@ -572,7 +570,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
             });
             route.final = this.t('outboundNames.Node Select');
             route.auto_detect_interface = true;
-            route.default_domain_resolver = 'dns_resolver';
+            route.default_domain_resolver = 'dns_direct';
             return route;
         }
 
@@ -642,7 +640,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
         route.final = this.t('outboundNames.Node Select');
         route.auto_detect_interface = true;
-        route.default_domain_resolver = 'dns_resolver';
+        route.default_domain_resolver = 'dns_direct';
         return route;
     }
 
@@ -659,9 +657,19 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         const rules = generateRules(this.selectedRules, this.customRules);
         this.config.route = this.buildRoute(rules);
 
-        // ★ DNS 修复：所有 A/AAAA 都走 fakeip
         if (FIX_DNS && this.config.dns) {
             this.config.dns = fixDns(this.config.dns);
+        }
+
+        // ★★★ 1.14+ TUN 配置：dns_mode 接管 DNS，stack 按需选择 ★★★
+        if (this.config.inbounds) {
+            this.config.inbounds.forEach(inbound => {
+                if (inbound.type === 'tun') {
+                    inbound.stack = 'gvisor';   // 或 'system'
+                    inbound.strict_route = true;
+                    inbound.dns_mode = 'hijack'; // 1.14+ 新增，防 DNS 泄露的关键
+                }
+            });
         }
 
         filterTopLevel(this.config);
