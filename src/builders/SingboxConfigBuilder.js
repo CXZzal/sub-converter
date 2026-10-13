@@ -24,8 +24,11 @@ const PROXY_TYPES = new Set([
     'wireguard', 'ssh', 'mieru'
 ]);
 
-// ★★★ Global 模式开关：true = 全部走代理，false = 正常分流 ★★★
+// ★★★ Global 模式开关 ★★★
 const GLOBAL_MODE = true;
+
+// ★★★ 让所有域名都走 fakeip（修 DNS 污染）★★★
+const FIX_DNS = true;
 
 function filterTopLevel(config) {
     Object.keys(config).forEach(key => {
@@ -145,6 +148,32 @@ function deepClean(obj) {
             deepClean(obj[key]);
         }
     });
+}
+
+// ★★★ 重写 DNS：所有 A/AAAA 查询都走 fakeip ★★★
+function fixDns(dns) {
+    if (!dns || !Array.isArray(dns.servers)) return dns;
+    return {
+        ...dns,
+        rules: [
+            // 1) 所有 A/AAAA 查询都返回 fakeip，后面按域名路由决定走直连还是代理
+            {
+                query_type: ['A', 'AAAA'],
+                server: 'dns_fakeip'
+            },
+            // 2) CNAME 查询走代理 DNS
+            {
+                query_type: 'CNAME',
+                server: 'dns_proxy'
+            },
+            // 3) 其他类型（HTTPS/SVCB 等）走代理 DNS，避免被污染
+            {
+                query_type: ['HTTPS', 'SVCB'],
+                server: 'dns_proxy'
+            }
+        ],
+        final: 'dns_proxy'
+    };
 }
 
 export class SingboxConfigBuilder extends BaseConfigBuilder {
@@ -531,7 +560,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         route.rules = [];
         this._seenRuleSets = new Set();
 
-        // ★★★ Global 模式：所有流量全部走代理 ★★★
         if (GLOBAL_MODE) {
             this._addRuleSet(
                 route.rule_set,
@@ -548,7 +576,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
             return route;
         }
 
-        // ===== 正常分流模式 =====
         this._addRuleSet(
             route.rule_set,
             'geolocation-!cn',
@@ -631,6 +658,11 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
         const rules = generateRules(this.selectedRules, this.customRules);
         this.config.route = this.buildRoute(rules);
+
+        // ★ DNS 修复：所有 A/AAAA 都走 fakeip
+        if (FIX_DNS && this.config.dns) {
+            this.config.dns = fixDns(this.config.dns);
+        }
 
         filterTopLevel(this.config);
         deepClean(this.config);
