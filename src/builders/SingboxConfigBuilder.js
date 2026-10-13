@@ -46,7 +46,24 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         return proxy?.tag;
     }
 
+    // ===== 诊断：看看解析器到底给了多少个节点 =====
+    addCustomItems(customItems) {
+        console.log('[SB-DIAG] addCustomItems count =',
+            Array.isArray(customItems) ? customItems.length : 'not-array');
+        if (Array.isArray(customItems) && customItems.length > 0) {
+            console.log('[SB-DIAG] first item keys =',
+                Object.keys(customItems[0]).join(','));
+            console.log('[SB-DIAG] first item sample =',
+                JSON.stringify(customItems[0]).slice(0, 400));
+        }
+        super.addCustomItems(customItems);
+        console.log('[SB-DIAG] after addCustomItems, outbounds total =',
+            (this.config.outbounds || []).length);
+    }
+
     convertProxy(proxy) {
+        console.log('[SB-DIAG] convertProxy type =', proxy?.type, '| tag =', proxy?.tag);
+
         const base = {
             tag: proxy.tag,
             server: proxy.server,
@@ -207,6 +224,8 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
             }
 
             default:
+                console.error('[SB-DIAG] UNHANDLED type =', proxy?.type,
+                    '| full =', JSON.stringify(proxy).slice(0, 300));
                 return null;
         }
     }
