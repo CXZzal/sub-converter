@@ -28,7 +28,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         return this;
     }
 
-    // ★★★ 关键修复：让它返回 false，订阅内容就会被解析出节点 ★★★
     isCompatibleProviderFormat(format) {
         return false;
     }
@@ -70,7 +69,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                 }
                 return out;
             }
-
             case 'vmess':
                 return {
                     ...base,
@@ -81,7 +79,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     tls,
                     transport
                 };
-
             case 'vless': {
                 const out = {
                     ...base,
@@ -94,7 +91,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                 if (proxy.packet_encoding) out.packet_encoding = proxy.packet_encoding;
                 return out;
             }
-
             case 'trojan':
                 return {
                     ...base,
@@ -103,7 +99,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     tls,
                     transport
                 };
-
             case 'hysteria2': {
                 const out = {
                     ...base,
@@ -123,7 +118,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                 }
                 return out;
             }
-
             case 'hysteria': {
                 const out = {
                     ...base,
@@ -136,7 +130,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                 if (proxy.down_mbps) out.down_mbps = proxy.down_mbps;
                 return out;
             }
-
             case 'tuic':
                 return {
                     ...base,
@@ -147,7 +140,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     udp_relay_mode: proxy.udp_relay_mode,
                     tls
                 };
-
             case 'http':
                 return {
                     ...base,
@@ -156,7 +148,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     password: proxy.password,
                     tls
                 };
-
             case 'socks5':
                 return {
                     ...base,
@@ -164,7 +155,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     username: proxy.username,
                     password: proxy.password
                 };
-
             case 'snell': {
                 const out = {
                     ...base,
@@ -175,16 +165,13 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                 if (proxy.obfs_mode) out.obfs_mode = proxy.obfs_mode;
                 return out;
             }
-
-            case 'anytls': {
+            case 'anytls':
                 return {
                     ...base,
                     type: 'anytls',
                     password: proxy.password,
                     tls: tls ?? { enabled: true }
                 };
-            }
-
             case 'shadowtls': {
                 const out = {
                     ...base,
@@ -196,8 +183,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                 else if (tls) out.tls = tls;
                 return out;
             }
-
-            case 'naive': {
+            case 'naive':
                 return {
                     ...base,
                     type: 'naive',
@@ -205,11 +191,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     password: proxy.password,
                     tls: tls ?? { enabled: true }
                 };
-            }
-
             default:
-                console.error('[SB-DIAG] UNHANDLED type =', proxy?.type,
-                    '| full =', JSON.stringify(proxy).slice(0, 300));
                 return null;
         }
     }
@@ -262,40 +244,21 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         this.config.outbounds.push(proxy);
     }
 
+    // ============ 精简版：只建 3 类组 ============
+    // 1. 节点选择（总 selector）
+    // 2. 自动选择（urltest）
+    // 3. 地区分组（urltest）—— 当快捷方式用
     addSelectors() {
         const proxyList = this.getProxyList();
         this.addCountryGroups();
         this.addAutoSelectGroup(proxyList);
         this.addNodeSelectGroup(proxyList);
-        const outbounds = this.getOutboundsList();
-        this.addOutboundGroups(outbounds, proxyList);
-        this.addCustomRuleGroups(proxyList);
-        this.addFallBackGroup(proxyList);
+        // 不再生成 私有网络 / 国内服务 / 非中国 / 漏网之鱼 / AI / 油管 等独立组
+        // 它们在 buildRoute 里会直接映射到 DIRECT 或 节点选择
     }
 
     hasOutboundTag(tag) {
         return (this.config.outbounds || []).some(o => o.tag === tag);
-    }
-
-    buildNodeSelectOptions(proxyList) {
-        const options = [];
-        if (this.includeAutoSelect) options.push(this.t('outboundNames.Auto Select'));
-        if (this.manualGroupName) options.push(this.manualGroupName);
-        this.countryGroupNames.forEach(g => options.push(g));
-        proxyList.forEach(p => { if (!options.includes(p)) options.push(p); });
-        if (!options.includes('DIRECT')) options.push('DIRECT');
-        return uniqueNames(options);
-    }
-
-    buildAggregatedOptions(proxyList) {
-        const options = [];
-        if (this.includeAutoSelect) options.push(this.t('outboundNames.Auto Select'));
-        options.push(this.t('outboundNames.Node Select'));
-        if (this.manualGroupName) options.push(this.manualGroupName);
-        this.countryGroupNames.forEach(g => options.push(g));
-        proxyList.forEach(p => { if (!options.includes(p)) options.push(p); });
-        if (!options.includes('DIRECT')) options.push('DIRECT');
-        return uniqueNames(options);
     }
 
     addAutoSelectGroup(proxyList) {
@@ -317,60 +280,20 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         this.config.outbounds = this.config.outbounds || [];
         const tag = this.t('outboundNames.Node Select');
         if (this.hasOutboundTag(tag)) return;
-        const options = this.buildNodeSelectOptions(proxyList);
+
+        // 选项顺序：自动选择 → 各地区 → 所有节点 → DIRECT
+        const options = [];
+        if (this.includeAutoSelect) options.push(this.t('outboundNames.Auto Select'));
+        this.countryGroupNames.forEach(g => options.push(g));
+        proxyList.forEach(p => { if (!options.includes(p)) options.push(p); });
+        if (!options.includes('DIRECT')) options.push('DIRECT');
+
+        const finalOptions = uniqueNames(options);
         this.config.outbounds.push({
             type: 'selector',
             tag,
-            outbounds: options,
-            default: options[0]
-        });
-    }
-
-    addOutboundGroups(outbounds, proxyList) {
-        this.config.outbounds = this.config.outbounds || [];
-        outbounds.forEach(outbound => {
-            if (outbound === this.t('outboundNames.Node Select')) return;
-            const tag = this.t(`outboundNames.${outbound}`);
-            if (this.hasOutboundTag(tag)) return;
-            let options = this.buildAggregatedOptions(proxyList);
-            if (DIRECT_DEFAULT_RULES.has(outbound)) {
-                options = ['DIRECT', ...options.filter(p => p !== 'DIRECT')];
-            }
-            this.config.outbounds.push({
-                type: 'selector',
-                tag,
-                outbounds: options,
-                default: options[0]
-            });
-        });
-    }
-
-    addCustomRuleGroups(proxyList) {
-        if (!Array.isArray(this.customRules)) return;
-        this.config.outbounds = this.config.outbounds || [];
-        this.customRules.forEach(rule => {
-            if (!rule || !rule.name) return;
-            if (this.hasOutboundTag(rule.name)) return;
-            const options = this.buildAggregatedOptions(proxyList);
-            this.config.outbounds.push({
-                type: 'selector',
-                tag: rule.name,
-                outbounds: options,
-                default: options[0]
-            });
-        });
-    }
-
-    addFallBackGroup(proxyList) {
-        this.config.outbounds = this.config.outbounds || [];
-        const tag = this.t('outboundNames.Fall Back');
-        if (this.hasOutboundTag(tag)) return;
-        const options = this.buildAggregatedOptions(proxyList);
-        this.config.outbounds.push({
-            type: 'selector',
-            tag,
-            outbounds: options,
-            default: options[0]
+            outbounds: finalOptions,
+            default: finalOptions[0]
         });
     }
 
@@ -378,7 +301,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         const proxies = this.getValidProxies();
         if (proxies.length === 0) {
             this.countryGroupNames = [];
-            this.manualGroupName = null;
             return;
         }
 
@@ -388,18 +310,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
         this.config.outbounds = this.config.outbounds || [];
         const existing = new Set(this.config.outbounds.map(o => o.tag).filter(Boolean));
-
-        const manualNames = proxies.map(p => p.tag).filter(Boolean);
-        const manualGroupName = manualNames.length > 0 ? this.t('outboundNames.Manual Switch') : null;
-        if (manualGroupName && !existing.has(manualGroupName)) {
-            this.config.outbounds.push({
-                type: 'selector',
-                tag: manualGroupName,
-                outbounds: uniqueNames(manualNames),
-                default: manualNames[0]
-            });
-            existing.add(manualGroupName);
-        }
 
         const countryGroupNames = [];
         Object.keys(countryGroups).sort((a, b) => a.localeCompare(b)).forEach(country => {
@@ -420,7 +330,16 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         });
 
         this.countryGroupNames = countryGroupNames;
-        this.manualGroupName = manualGroupName;
+    }
+
+    // ============ 规则 outbound 映射 ============
+    // 私有网络 / 国内服务 → DIRECT
+    // 其它 → 节点选择
+    _resolveRuleOutbound(ruleOutbound) {
+        if (DIRECT_DEFAULT_RULES.has(ruleOutbound)) {
+            return 'DIRECT';
+        }
+        return this.t('outboundNames.Node Select');
     }
 
     _addRuleSet(ruleSets, tag, url) {
@@ -448,7 +367,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         );
 
         rules.forEach(rule => {
-            const outbound = this.t('outboundNames.' + rule.outbound);
+            const outbound = this._resolveRuleOutbound(rule.outbound);
 
             if (Array.isArray(rule.src_ip_cidr) && rule.src_ip_cidr.length) {
                 rule.src_ip_cidr.forEach(cidr => {
@@ -505,7 +424,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
             }
         });
 
-        route.final = this.t('outboundNames.Fall Back');
+        route.final = this.t('outboundNames.Node Select');
         route.auto_detect_interface = true;
         route.default_domain_resolver = 'dns_resolver';
         return route;
