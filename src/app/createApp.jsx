@@ -414,18 +414,14 @@ export function createApp(bindings = {}) {
 export function parseSelectedRules(raw) {
     if (!raw) return [];
 
-    // 首先检查是否是预设名称 (minimal, balanced, comprehensive)
-    // 这确保向后兼容主分支的 API 行为
     if (typeof raw === 'string' && PREDEFINED_RULE_SETS[raw]) {
         return PREDEFINED_RULE_SETS[raw];
     }
 
-    // 尝试解析为 JSON 数组
     try {
         const parsed = JSON.parse(raw);
         return Array.isArray(parsed) ? parsed : [];
     } catch {
-        // 解析失败，回退到 minimal 预设
         console.warn(`Failed to parse selectedRules: ${raw}, falling back to minimal`);
         return PREDEFINED_RULE_SETS.minimal;
     }
@@ -546,10 +542,12 @@ function requireConfigStorage(service) {
     return service;
 }
 
+// ★★★ 已改：handleError 现在会把堆栈返回，方便定位 param is not defined ★★★
 function handleError(c, error, logger) {
     if (error instanceof ServiceError) {
         return c.text(error.message, error.status);
     }
     logger.error?.('Unhandled error', error);
-    return c.text(`Error: ${error.message}`, 500);
+    const stack = error.stack ? `\n\nSTACK:\n${error.stack}` : '';
+    return c.text(`Error: ${error.message}${stack}`, 500);
 }
