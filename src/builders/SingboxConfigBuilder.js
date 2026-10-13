@@ -12,6 +12,19 @@ import { uniqueNames } from './helpers/groupBuilder.js';
 
 const RESERVED_OUTBOUND_TYPES = new Set(['direct', 'block', 'selector', 'urltest', 'dns']);
 
+// sing-box 1.14 顶层允许的字段（白名单）
+const SINGBOX_TOP_LEVEL_KEYS = new Set([
+    'log',
+    'dns',
+    'ntp',
+    'inbounds',
+    'outbounds',
+    'route',
+    'experimental',
+    'services',
+    'endpoints'
+]);
+
 // 像节点的对象（有 server 字段的协议）
 const PROXY_TYPES = new Set([
     'shadowsocks', 'vmess', 'vless', 'trojan',
@@ -20,8 +33,33 @@ const PROXY_TYPES = new Set([
     'wireguard', 'ssh', 'mieru'
 ]);
 
+// Clash 遗留的顶层字段（明确删）
+const CLASH_TOP_LEVEL_JUNK = new Set([
+    'port', 'socks-port', 'redir-port', 'tproxy-port', 'mixed-port',
+    'allow-lan', 'bind-address', 'mode', 'log-level',
+    'external-controller', 'external-ui', 'external-ui-name', 'external-ui-url',
+    'secret', 'ipv6', 'unified-delay', 'tcp-concurrent',
+    'find-process-mode', 'profile', 'geodata-mode', 'geo-auto-update',
+    'geodata-loader', 'geox-url', 'hosts', 'interface-name',
+    'routing-mark', 'keep-alive-interval', 'sniffer', 'cfw-latency-timeout',
+    'cfw-latency-url', 'proxy-providers', 'rule-providers',
+    'proxy-groups', 'proxies', 'rules', 'tun', 'authentication',
+    'skip-auth-prefixes', 'lan-allowed-ips', 'lan-disallowed-ips'
+]);
+
 /**
- * 全对象递归清理：字段名转换 + 无效字段剔除
+ * 顶层白名单过滤：只保留 sing-box 认的顶层字段
+ */
+function filterTopLevel(config) {
+    Object.keys(config).forEach(key => {
+        if (!SINGBOX_TOP_LEVEL_KEYS.has(key)) {
+            delete config[key];
+        }
+    });
+}
+
+/**
+ * 节点内部字段转换 + 无效字段剔除
  */
 function deepClean(obj) {
     if (Array.isArray(obj)) {
@@ -30,27 +68,28 @@ function deepClean(obj) {
     }
     if (!obj || typeof obj !== 'object') return;
 
-    // 1) port 处理：只有像节点的对象才转，其他删
+    const isProxy = PROXY_TYPES.has(obj.type);
+
+    // port → server_port（只对节点）
     if (obj.port !== undefined) {
-        const isProxyLike = PROXY_TYPES.has(obj.type) && obj.server !== undefined;
-        if (isProxyLike && obj.server_port === undefined) {
+        if (isProxy && obj.server !== undefined && obj.server_port === undefined) {
             obj.server_port = obj.port;
         }
         delete obj.port;
     }
 
-    // 2) sni / servername → tls.server_name
+    // sni / servername → tls.server_name
     const sniValue = obj.sni || obj.servername;
-    if (sniValue && PROXY_TYPES.has(obj.type)) {
+    if (sniValue && isProxy) {
         obj.tls = obj.tls || { enabled: true };
         if (!obj.tls.server_name) obj.tls.server_name = sniValue;
     }
     delete obj.sni;
     delete obj.servername;
 
-    // 3) skip-cert-verify / allowInsecure → tls.insecure
+    // skip-cert-verify / allowInsecure → tls.insecure
     const insecureValue = obj['skip-cert-verify'] ?? obj.skip_cert_verify ?? obj.allowInsecure;
-    if (insecureValue === true && PROXY_TYPES.has(obj.type)) {
+    if (insecureValue === true && isProxy) {
         obj.tls = obj.tls || { enabled: true };
         obj.tls.insecure = true;
     }
@@ -58,35 +97,35 @@ function deepClean(obj) {
     delete obj.skip_cert_verify;
     delete obj.allowInsecure;
 
-    // 4) 顶层 alpn → tls.alpn
-    if (obj.alpn && PROXY_TYPES.has(obj.type) && !obj.tls?.alpn) {
+    // 顶层 alpn → tls.alpn
+    if (obj.alpn && isProxy && !obj.tls?.alpn) {
         obj.tls = obj.tls || { enabled: true };
         obj.tls.alpn = Array.isArray(obj.alpn) ? obj.alpn : [obj.alpn];
         delete obj.alpn;
     }
 
-    // 5) 顶层 fingerprint → tls.utls.fingerprint
-    if (obj.fingerprint && PROXY_TYPES.has(obj.type)) {
+    // 顶层 fingerprint → tls.utls.fingerprint
+    if (obj.fingerprint && isProxy) {
         obj.tls = obj.tls || { enabled: true };
         if (!obj.tls.utls) obj.tls.utls = { enabled: true };
         obj.tls.utls.fingerprint = obj.fingerprint;
         delete obj.fingerprint;
     }
 
-    // 6) alterId → alter_id
+    // alterId → alter_id
     if (obj.alterId !== undefined && obj.alter_id === undefined) {
         obj.alter_id = obj.alterId;
     }
     delete obj.alterId;
 
-    // 7) vmess cipher → security
+    // vmess cipher → security
     if (obj.type === 'vmess' && obj.cipher !== undefined && obj.security === undefined) {
         obj.security = obj.cipher;
     }
-    if (PROXY_TYPES.has(obj.type)) delete obj.cipher;
+    if (isProxy) delete obj.cipher;
 
-    // 8) network → transport
-    if (obj.network && !obj.transport && PROXY_TYPES.has(obj.type)) {
+    // network → transport
+    if (obj.network && !obj.transport && isProxy) {
         const n = obj.network;
         if (n === 'ws') {
             obj.transport = { type: 'ws' };
@@ -102,7 +141,7 @@ function deepClean(obj) {
         }
     }
 
-    // 9) 补 transport 缺的字段
+    // 补 transport 缺的字段
     if (obj.transport) {
         if (obj['ws-path'] && !obj.transport.path) obj.transport.path = obj['ws-path'];
         if (obj['ws-headers'] && !obj.transport.headers) obj.transport.headers = obj['ws-headers'];
@@ -115,9 +154,25 @@ function deepClean(obj) {
     delete obj['grpc-service-name'];
     delete obj.network;
 
-    // 10) sing-box 不认的字段
-    delete obj.udp;
-    delete obj.tfo;
+    // Clash 节点级遗留字段（sing-box 不认）
+    if (isProxy) {
+        delete obj.udp;
+        delete obj.tfo;
+        delete obj.smux;
+        delete obj.sni;
+        delete obj.servername;
+        delete obj.obfs; // hysteria2 的 obfs 已在 convertProxy 单独处理
+        delete obj.protocol; // 已在 hysteria 单独处理
+        delete obj.up; // 上游 clash 常见字段
+        delete obj.down;
+        delete obj.obfs-param;
+        delete obj.protocol-param;
+        delete obj['obfs-param'];
+        delete obj['protocol-param'];
+        delete obj.interface_name;
+        delete obj.routing_mark;
+        delete obj.ip_version;
+    }
 
     // 递归
     Object.keys(obj).forEach(key => {
@@ -346,7 +401,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
     addProxyToConfig(proxy) {
         if (!proxy || !proxy.tag) return;
-        deepClean(proxy);
         this.config.outbounds = this.config.outbounds || [];
         if (this.config.outbounds.some(o => o.tag === proxy.tag)) {
             let i = 2;
@@ -549,14 +603,28 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         const rules = generateRules(this.selectedRules, this.customRules);
         this.config.route = this.buildRoute(rules);
 
-        // ★ 关键：对整份 config 递归清理（不只 outbounds）
+        // ★★★ 关键 1：顶层白名单过滤（一次干掉所有 Clash 顶层字段）★★★
+        filterTopLevel(this.config);
+
+        // ★★★ 关键 2：递归清理节点内部字段 ★★★
         deepClean(this.config);
 
-        // 便于验证新代码真的跑了
-        console.log('[SB-BUILD] config built, outbounds =', this.config.outbounds.length);
-        const portLeaks = JSON.stringify(this.config).match(/"port"/g);
-        console.log('[SB-BUILD] remaining "port" fields =', portLeaks ? portLeaks.length : 0);
+        // 最终验证：扫描整个 JSON 里还有没有不合法字段
+        const json = JSON.stringify(this.config, null, 2);
+        const suspicious = [
+            '"port"', '"socks-port"', '"redir-port"', '"tproxy-port"',
+            '"mixed-port"', '"allow-lan"', '"external-controller"',
+            '"mode"', '"log-level"', '"sni"', '"skip-cert-verify"',
+            '"alterId"', '"network"'
+        ];
+        suspicious.forEach(field => {
+            const count = (json.match(new RegExp(field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+            if (count > 0) {
+                console.warn(`[SB-BUILD] ⚠️ suspicious field ${field} appears ${count} times`);
+            }
+        });
+        console.log('[SB-BUILD] config built OK, outbounds =', this.config.outbounds.length);
 
-        return JSON.stringify(this.config, null, 2);
+        return json;
     }
 }
