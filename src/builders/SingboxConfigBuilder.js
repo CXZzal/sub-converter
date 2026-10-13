@@ -714,7 +714,19 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
         filterTopLevel(this.config);
         deepClean(this.config);
-
+// ★★★ 最后一遍：强制给所有 reality 节点补 uTLS ★★★
+if (Array.isArray(this.config.outbounds)) {
+    this.config.outbounds.forEach(ob => {
+        if (ob && ob.tls && ob.tls.reality) {
+            if (!ob.tls.utls) {
+                ob.tls.utls = { enabled: true, fingerprint: 'chrome' };
+            } else {
+                if (ob.tls.utls.enabled === undefined) ob.tls.utls.enabled = true;
+                if (!ob.tls.utls.fingerprint) ob.tls.utls.fingerprint = 'chrome';
+            }
+        }
+    });
+}
         return JSON.stringify(this.config, null, 2);
     }
 }
