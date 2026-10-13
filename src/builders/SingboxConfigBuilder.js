@@ -14,7 +14,7 @@ const RESERVED_OUTBOUND_TYPES = new Set(['direct', 'block', 'selector', 'urltest
 
 const SINGBOX_TOP_LEVEL_KEYS = new Set([
     'log', 'dns', 'ntp', 'inbounds', 'outbounds',
-    'route', 'experimental', 'services', 'endpoints'
+    'route', 'experimental', 'services', 'endpoints', 'http_clients'
 ]);
 
 const PROXY_TYPES = new Set([
@@ -84,7 +84,6 @@ function deepClean(obj) {
         delete obj.alpn;
     }
 
-    // ★ fingerprint → tls.utls.fingerprint
     if (obj.fingerprint && isProxy) {
         obj.tls = obj.tls || { enabled: true };
         if (!obj.tls.utls) obj.tls.utls = { enabled: true };
@@ -92,7 +91,6 @@ function deepClean(obj) {
         delete obj.fingerprint;
     }
 
-    // ★ 兜底：Reality 节点必须有 utls（sing-box 强制要求）
     if (isProxy && obj.tls && obj.tls.reality) {
         if (!obj.tls.utls) {
             obj.tls.utls = { enabled: true, fingerprint: 'chrome' };
@@ -267,7 +265,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                 if (proxy.flow) out.flow = proxy.flow;
                 if (proxy.packet_encoding) out.packet_encoding = proxy.packet_encoding;
 
-                // ★★★ Reality 必备：补 uTLS ★★★
                 if (out.tls && out.tls.reality) {
                     if (!out.tls.utls) {
                         out.tls.utls = {
@@ -289,7 +286,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     transport
                 };
 
-                // ★★★ Reality 必备：补 uTLS ★★★
                 if (out.tls && out.tls.reality) {
                     if (!out.tls.utls) {
                         out.tls.utls = {
@@ -441,7 +437,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         }
         if (tlsConf.reality) tls.reality = tlsConf.reality;
 
-        // ★★★ Reality 必须带 uTLS ★★★
         if (tls.reality) {
             if (!tls.utls) {
                 tls.utls = { enabled: true, fingerprint: 'chrome' };
@@ -584,8 +579,8 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
             type: 'remote',
             tag,
             format: 'binary',
-            url,
-            download_detour: 'DIRECT'
+            url
+            // download_detour 已移除，使用全局 http_clients 替代
         });
         this._seenRuleSets.add(tag);
     }
@@ -596,7 +591,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         route.rules = [];
         this._seenRuleSets = new Set();
 
-        // ★ STUN 拦截（防 WebRTC 泄露）
         route.rules.push({ protocol: 'stun', action: 'reject' });
 
         if (GLOBAL_MODE) {
@@ -698,6 +692,19 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         const rules = generateRules(this.selectedRules, this.customRules);
         this.config.route = this.buildRoute(rules);
 
+        // ★★★ 1.14+ 修复弃用警告：使用 http_clients 替代 download_detour ★★★
+        this.config.http_clients = [
+            {
+                tag: 'rule-set-dl',
+                detour: 'DIRECT'
+            }
+        ];
+
+        // 在 route 中指定默认的 http client
+        if (this.config.route) {
+            this.config.route.default_http_client = 'rule-set-dl';
+        }
+
         if (FIX_DNS && this.config.dns) {
             this.config.dns = fixDns(this.config.dns);
         }
@@ -714,19 +721,21 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
         filterTopLevel(this.config);
         deepClean(this.config);
-// ★★★ 最后一遍：强制给所有 reality 节点补 uTLS ★★★
-if (Array.isArray(this.config.outbounds)) {
-    this.config.outbounds.forEach(ob => {
-        if (ob && ob.tls && ob.tls.reality) {
-            if (!ob.tls.utls) {
-                ob.tls.utls = { enabled: true, fingerprint: 'chrome' };
-            } else {
-                if (ob.tls.utls.enabled === undefined) ob.tls.utls.enabled = true;
-                if (!ob.tls.utls.fingerprint) ob.tls.utls.fingerprint = 'chrome';
-            }
+
+        // ★★★ 最后一遍：强制给所有 reality 节点补 uTLS ★★★
+        if (Array.isArray(this.config.outbounds)) {
+            this.config.outbounds.forEach(ob => {
+                if (ob && ob.tls && ob.tls.reality) {
+                    if (!ob.tls.utls) {
+                        ob.tls.utls = { enabled: true, fingerprint: 'chrome' };
+                    } else {
+                        if (ob.tls.utls.enabled === undefined) ob.tls.utls.enabled = true;
+                        if (!ob.tls.utls.fingerprint) ob.tls.utls.fingerprint = 'chrome';
+                    }
+                }
+            });
         }
-    });
-}
+
         return JSON.stringify(this.config, null, 2);
     }
 }
