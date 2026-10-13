@@ -24,9 +24,8 @@ const PROXY_TYPES = new Set([
     'wireguard', 'ssh', 'mieru'
 ]);
 
-// ★★★ 开关 ★★★
-const GLOBAL_MODE = true;   // true = 全局代理模式
-const FIX_DNS = true;       // true = 启用 DNS 防泄露
+const GLOBAL_MODE = true;
+const FIX_DNS = true;
 
 function filterTopLevel(config) {
     Object.keys(config).forEach(key => {
@@ -85,11 +84,21 @@ function deepClean(obj) {
         delete obj.alpn;
     }
 
+    // ★ fingerprint → tls.utls.fingerprint
     if (obj.fingerprint && isProxy) {
         obj.tls = obj.tls || { enabled: true };
         if (!obj.tls.utls) obj.tls.utls = { enabled: true };
         obj.tls.utls.fingerprint = obj.fingerprint;
         delete obj.fingerprint;
+    }
+
+    // ★ 兜底：Reality 节点必须有 utls（sing-box 强制要求）
+    if (isProxy && obj.tls && obj.tls.reality) {
+        if (!obj.tls.utls) {
+            obj.tls.utls = { enabled: true, fingerprint: 'chrome' };
+        } else if (!obj.tls.utls.fingerprint) {
+            obj.tls.utls.fingerprint = 'chrome';
+        }
     }
 
     if (obj.alterId !== undefined && obj.alter_id === undefined) {
@@ -148,7 +157,6 @@ function deepClean(obj) {
     });
 }
 
-// ★★★ 1.14+ DNS 配置：使用 type: "fakeip" 定义服务器 ★★★
 function fixDns(dns) {
     if (!dns || !Array.isArray(dns.servers)) return dns;
     return {
@@ -159,11 +167,8 @@ function fixDns(dns) {
             { type: 'tcp', tag: 'dns_proxy', server: '1.1.1.1' }
         ],
         rules: [
-            // 所有 A/AAAA 查询返回 fakeip
             { query_type: ['A', 'AAAA'], server: 'dns_fakeip' },
-            // CNAME 查询走代理 DNS
             { query_type: 'CNAME', server: 'dns_proxy' },
-            // HTTPS/SVCB 走代理 DNS
             { query_type: ['HTTPS', 'SVCB'], server: 'dns_proxy' }
         ],
         final: 'dns_direct'
@@ -261,16 +266,42 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                 };
                 if (proxy.flow) out.flow = proxy.flow;
                 if (proxy.packet_encoding) out.packet_encoding = proxy.packet_encoding;
+
+                // ★★★ Reality 必备：补 uTLS ★★★
+                if (out.tls && out.tls.reality) {
+                    if (!out.tls.utls) {
+                        out.tls.utls = {
+                            enabled: true,
+                            fingerprint: proxy['client-fingerprint'] || 'chrome'
+                        };
+                    } else if (!out.tls.utls.fingerprint) {
+                        out.tls.utls.fingerprint = proxy['client-fingerprint'] || 'chrome';
+                    }
+                }
                 return out;
             }
-            case 'trojan':
-                return {
+            case 'trojan': {
+                const out = {
                     ...base,
                     type: 'trojan',
                     password: proxy.password,
                     tls,
                     transport
                 };
+
+                // ★★★ Reality 必备：补 uTLS ★★★
+                if (out.tls && out.tls.reality) {
+                    if (!out.tls.utls) {
+                        out.tls.utls = {
+                            enabled: true,
+                            fingerprint: proxy['client-fingerprint'] || 'chrome'
+                        };
+                    } else if (!out.tls.utls.fingerprint) {
+                        out.tls.utls.fingerprint = proxy['client-fingerprint'] || 'chrome';
+                    }
+                }
+                return out;
+            }
 
             case 'hysteria2': {
                 const out = {
@@ -405,8 +436,19 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         if (tlsConf.server_name) tls.server_name = tlsConf.server_name;
         if (tlsConf.insecure) tls.insecure = true;
         if (Array.isArray(tlsConf.alpn) && tlsConf.alpn.length) tls.alpn = tlsConf.alpn;
-        if (tlsConf.fingerprint) tls.utls = { enabled: true, fingerprint: tlsConf.fingerprint };
+        if (tlsConf.fingerprint) {
+            tls.utls = { enabled: true, fingerprint: tlsConf.fingerprint };
+        }
         if (tlsConf.reality) tls.reality = tlsConf.reality;
+
+        // ★★★ Reality 必须带 uTLS ★★★
+        if (tls.reality) {
+            if (!tls.utls) {
+                tls.utls = { enabled: true, fingerprint: 'chrome' };
+            } else if (!tls.utls.fingerprint) {
+                tls.utls.fingerprint = 'chrome';
+            }
+        }
         return tls;
     }
 
@@ -554,8 +596,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         route.rules = [];
         this._seenRuleSets = new Set();
 
-        // ★★★ 1.14+ 在 TUN 上处理 DNS，route 层无需再劫持 ★★★
-        // 拦截 STUN 防 WebRTC 泄露
+        // ★ STUN 拦截（防 WebRTC 泄露）
         route.rules.push({ protocol: 'stun', action: 'reject' });
 
         if (GLOBAL_MODE) {
@@ -661,13 +702,12 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
             this.config.dns = fixDns(this.config.dns);
         }
 
-        // ★★★ 1.14+ TUN 配置：dns_mode 接管 DNS，stack 按需选择 ★★★
         if (this.config.inbounds) {
             this.config.inbounds.forEach(inbound => {
                 if (inbound.type === 'tun') {
-                    inbound.stack = 'gvisor';   // 或 'system'
+                    inbound.stack = 'gvisor';
                     inbound.strict_route = true;
-                    inbound.dns_mode = 'hijack'; // 1.14+ 新增，防 DNS 泄露的关键
+                    inbound.dns_mode = 'hijack';
                 }
             });
         }
