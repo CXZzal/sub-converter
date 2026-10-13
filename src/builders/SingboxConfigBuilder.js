@@ -12,20 +12,11 @@ import { uniqueNames } from './helpers/groupBuilder.js';
 
 const RESERVED_OUTBOUND_TYPES = new Set(['direct', 'block', 'selector', 'urltest', 'dns']);
 
-// sing-box 1.14 顶层允许的字段（白名单）
 const SINGBOX_TOP_LEVEL_KEYS = new Set([
-    'log',
-    'dns',
-    'ntp',
-    'inbounds',
-    'outbounds',
-    'route',
-    'experimental',
-    'services',
-    'endpoints'
+    'log', 'dns', 'ntp', 'inbounds', 'outbounds',
+    'route', 'experimental', 'services', 'endpoints'
 ]);
 
-// 像节点的对象（有 server 字段的协议）
 const PROXY_TYPES = new Set([
     'shadowsocks', 'vmess', 'vless', 'trojan',
     'hysteria', 'hysteria2', 'tuic', 'http', 'socks',
@@ -41,6 +32,17 @@ function filterTopLevel(config) {
     });
 }
 
+// 把 "100 Mbps" / "100 mbps" / 100 / "100" 解析成数字
+function parseMbps(value) {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value === 'number') return value;
+    const s = String(value).trim();
+    const m = s.match(/^(\d+(?:\.\d+)?)/);
+    if (!m) return undefined;
+    const n = Number(m[1]);
+    return Number.isFinite(n) ? n : undefined;
+}
+
 function deepClean(obj) {
     if (Array.isArray(obj)) {
         obj.forEach(deepClean);
@@ -50,7 +52,6 @@ function deepClean(obj) {
 
     const isProxy = PROXY_TYPES.has(obj.type);
 
-    // port → server_port（只对节点）
     if (obj.port !== undefined) {
         if (isProxy && obj.server !== undefined && obj.server_port === undefined) {
             obj.server_port = obj.port;
@@ -58,7 +59,6 @@ function deepClean(obj) {
         delete obj.port;
     }
 
-    // sni / servername → tls.server_name
     const sniValue = obj.sni || obj.servername;
     if (sniValue && isProxy) {
         obj.tls = obj.tls || { enabled: true };
@@ -67,7 +67,6 @@ function deepClean(obj) {
     delete obj.sni;
     delete obj.servername;
 
-    // skip-cert-verify / allowInsecure → tls.insecure
     const insecureValue = obj['skip-cert-verify'] ?? obj.skip_cert_verify ?? obj.allowInsecure;
     if (insecureValue === true && isProxy) {
         obj.tls = obj.tls || { enabled: true };
@@ -77,14 +76,12 @@ function deepClean(obj) {
     delete obj.skip_cert_verify;
     delete obj.allowInsecure;
 
-    // 顶层 alpn → tls.alpn
     if (obj.alpn && isProxy && !obj.tls?.alpn) {
         obj.tls = obj.tls || { enabled: true };
         obj.tls.alpn = Array.isArray(obj.alpn) ? obj.alpn : [obj.alpn];
         delete obj.alpn;
     }
 
-    // 顶层 fingerprint → tls.utls.fingerprint
     if (obj.fingerprint && isProxy) {
         obj.tls = obj.tls || { enabled: true };
         if (!obj.tls.utls) obj.tls.utls = { enabled: true };
@@ -92,19 +89,16 @@ function deepClean(obj) {
         delete obj.fingerprint;
     }
 
-    // alterId → alter_id
     if (obj.alterId !== undefined && obj.alter_id === undefined) {
         obj.alter_id = obj.alterId;
     }
     delete obj.alterId;
 
-    // vmess cipher → security
     if (obj.type === 'vmess' && obj.cipher !== undefined && obj.security === undefined) {
         obj.security = obj.cipher;
     }
     if (isProxy) delete obj.cipher;
 
-    // network → transport
     if (obj.network && !obj.transport && isProxy) {
         const n = obj.network;
         if (n === 'ws') {
@@ -121,7 +115,6 @@ function deepClean(obj) {
         }
     }
 
-    // 补 transport 缺的字段
     if (obj.transport) {
         if (obj['ws-path'] && !obj.transport.path) obj.transport.path = obj['ws-path'];
         if (obj['ws-headers'] && !obj.transport.headers) obj.transport.headers = obj['ws-headers'];
@@ -134,24 +127,18 @@ function deepClean(obj) {
     delete obj['grpc-service-name'];
     delete obj.network;
 
-    // ★★★ 修好的部分：全部用方括号 ★★★
     if (isProxy) {
         delete obj.udp;
         delete obj.tfo;
         delete obj.smux;
-        delete obj.up;
-        delete obj.down;
         delete obj.interface_name;
         delete obj.routing_mark;
         delete obj.ip_version;
-        // 下面两行以前写成 delete obj.obfs-param 是语法 bug，现在改成方括号
         delete obj['obfs-param'];
         delete obj['protocol-param'];
-        delete obj['obfs-password'];
-        delete obj['protocol-param'];
+        // 注意：不再删 obfs-password / up / down，因为 convertProxy 里不再依赖它们
     }
 
-    // 递归
     Object.keys(obj).forEach(key => {
         if (obj[key] && typeof obj[key] === 'object') {
             deepClean(obj[key]);
@@ -160,7 +147,6 @@ function deepClean(obj) {
 }
 
 export class SingboxConfigBuilder extends BaseConfigBuilder {
-    // ★★★ 12 参数版本，对齐 createApp.jsx 的调用 ★★★
     constructor(
         inputString,
         selectedRules,
@@ -169,10 +155,10 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         lang,
         userAgent,
         groupByCountry,
-        enableClashUI,           // 忽略（sing-box 不支持 clash UI）
-        externalController,      // 忽略
-        externalUiDownloadUrl,   // 忽略
-        singboxConfigVersion,    // 用于日志
+        enableClashUI,
+        externalController,
+        externalUiDownloadUrl,
+        singboxConfigVersion,
         includeAutoSelect = true
     ) {
         super(inputString, baseConfig ?? SING_BOX_CONFIG, lang, userAgent, groupByCountry, includeAutoSelect);
@@ -261,6 +247,8 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     tls,
                     transport
                 };
+
+            // ★★★ 修复：hysteria2 的 obfs / up / down ★★★
             case 'hysteria2': {
                 const out = {
                     ...base,
@@ -268,18 +256,37 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     password: proxy.password,
                     tls
                 };
-                if (proxy.obfs) out.obfs = { type: proxy.obfs, password: proxy.obfs_password };
-                if (proxy.up_mbps) out.up_mbps = proxy.up_mbps;
-                if (proxy.down_mbps) out.down_mbps = proxy.down_mbps;
+
+                // obfs：可能是字符串（旧格式）或对象（convertYamlProxyToObject 输出）
+                if (proxy.obfs) {
+                    if (typeof proxy.obfs === 'string') {
+                        out.obfs = { type: proxy.obfs };
+                        if (proxy.obfs_password) out.obfs.password = proxy.obfs_password;
+                    } else if (typeof proxy.obfs === 'object' && proxy.obfs.type) {
+                        out.obfs = { type: proxy.obfs.type };
+                        if (proxy.obfs.password) out.obfs.password = proxy.obfs.password;
+                    }
+                }
+
+                // up / down：可能在 up_mbps 也可能是 up 字段
+                const upMbps = parseMbps(proxy.up_mbps ?? proxy.up);
+                const downMbps = parseMbps(proxy.down_mbps ?? proxy.down);
+                if (upMbps !== undefined) out.up_mbps = upMbps;
+                if (downMbps !== undefined) out.down_mbps = downMbps;
+
                 if (proxy.hop_interval_max) out.hop_interval_max = proxy.hop_interval_max;
+                if (proxy.hop_interval) out.hop_interval = proxy.hop_interval;
                 if (proxy.bbr_profile) out.bbr_profile = proxy.bbr_profile;
                 if (proxy.realm) out.realm = proxy.realm;
-                if (out.obfs) {
-                    if (proxy.obfs_min_packet_size) out.obfs.min_packet_size = proxy.obfs_min_packet_size;
-                    if (proxy.obfs_max_packet_size) out.obfs.max_packet_size = proxy.obfs_max_packet_size;
+                if (proxy.obfs && out.obfs) {
+                    const minPkt = proxy.obfs.min_packet_size ?? proxy.obfs_min_packet_size;
+                    const maxPkt = proxy.obfs.max_packet_size ?? proxy.obfs_max_packet_size;
+                    if (minPkt) out.obfs.min_packet_size = minPkt;
+                    if (maxPkt) out.obfs.max_packet_size = maxPkt;
                 }
                 return out;
             }
+
             case 'hysteria': {
                 const out = {
                     ...base,
@@ -288,10 +295,13 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     tls
                 };
                 if (proxy.protocol) out.protocol = proxy.protocol;
-                if (proxy.up_mbps) out.up_mbps = proxy.up_mbps;
-                if (proxy.down_mbps) out.down_mbps = proxy.down_mbps;
+                const upMbps = parseMbps(proxy.up_mbps ?? proxy.up);
+                const downMbps = parseMbps(proxy.down_mbps ?? proxy.down);
+                if (upMbps !== undefined) out.up_mbps = upMbps;
+                if (downMbps !== undefined) out.down_mbps = downMbps;
                 return out;
             }
+
             case 'tuic':
                 return {
                     ...base,
@@ -327,13 +337,24 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                 if (proxy.obfs_mode) out.obfs_mode = proxy.obfs_mode;
                 return out;
             }
-            case 'anytls':
-                return {
+
+            // ★★★ 修复：anytls 字段名转下划线 ★★★
+            case 'anytls': {
+                const out = {
                     ...base,
                     type: 'anytls',
                     password: proxy.password,
                     tls: tls ?? { enabled: true }
                 };
+                const idleCheck = proxy['idle-session-check-interval'] ?? proxy.idle_session_check_interval;
+                const idleTimeout = proxy['idle-session-timeout'] ?? proxy.idle_session_timeout;
+                const minIdle = proxy['min-idle-session'] ?? proxy.min_idle_session;
+                if (idleCheck) out.idle_session_check_interval = idleCheck;
+                if (idleTimeout) out.idle_session_timeout = idleTimeout;
+                if (minIdle) out.min_idle_session = minIdle;
+                return out;
+            }
+
             case 'shadowtls': {
                 const out = {
                     ...base,
@@ -365,6 +386,8 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         if (tlsConf.insecure) tls.insecure = true;
         if (Array.isArray(tlsConf.alpn) && tlsConf.alpn.length) tls.alpn = tlsConf.alpn;
         if (tlsConf.fingerprint) tls.utls = { enabled: true, fingerprint: tlsConf.fingerprint };
+        // 保留 reality 结构（vless / trojan 可能带）
+        if (tlsConf.reality) tls.reality = tlsConf.reality;
         return tls;
     }
 
