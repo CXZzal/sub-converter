@@ -3,7 +3,6 @@ import { groupProxiesByCountry } from '../utils.js';
 import {
     SING_BOX_CONFIG,
     generateRules,
-    getOutbounds,
     PREDEFINED_RULE_SETS,
     DIRECT_DEFAULT_RULES,
     SITE_RULE_SET_BASE_URL,
@@ -13,7 +12,7 @@ import { uniqueNames } from './helpers/groupBuilder.js';
 
 const RESERVED_OUTBOUND_TYPES = new Set(['direct', 'block', 'selector', 'urltest', 'dns']);
 
-export class SingBoxConfigBuilder extends BaseConfigBuilder {
+export class SingboxConfigBuilder extends BaseConfigBuilder {
     constructor(inputString, selectedRules, customRules, baseConfig, lang, userAgent, groupByCountry, includeAutoSelect = true) {
         super(inputString, baseConfig ?? SING_BOX_CONFIG, lang, userAgent, groupByCountry, includeAutoSelect);
         this.selectedRules = selectedRules;
@@ -32,8 +31,6 @@ export class SingBoxConfigBuilder extends BaseConfigBuilder {
     isCompatibleProviderFormat(format) {
         return format === 'clash' || format === 'singbox';
     }
-
-    // ---------- 抽象方法 ----------
 
     getProxies() {
         return this.config.outbounds || [];
@@ -116,7 +113,6 @@ export class SingBoxConfigBuilder extends BaseConfigBuilder {
                 if (proxy.obfs) out.obfs = { type: proxy.obfs, password: proxy.obfs_password };
                 if (proxy.up_mbps) out.up_mbps = proxy.up_mbps;
                 if (proxy.down_mbps) out.down_mbps = proxy.down_mbps;
-                // 1.14 新增
                 if (proxy.hop_interval_max) out.hop_interval_max = proxy.hop_interval_max;
                 if (proxy.bbr_profile) out.bbr_profile = proxy.bbr_profile;
                 if (proxy.realm) out.realm = proxy.realm;
@@ -168,7 +164,6 @@ export class SingBoxConfigBuilder extends BaseConfigBuilder {
                     password: proxy.password
                 };
 
-            // ===== 1.14 新增：Snell =====
             case 'snell': {
                 const out = {
                     ...base,
@@ -180,7 +175,6 @@ export class SingBoxConfigBuilder extends BaseConfigBuilder {
                 return out;
             }
 
-            // ===== AnyTLS（1.13+）=====
             case 'anytls': {
                 return {
                     ...base,
@@ -190,7 +184,6 @@ export class SingBoxConfigBuilder extends BaseConfigBuilder {
                 };
             }
 
-            // ===== ShadowTLS =====
             case 'shadowtls': {
                 const out = {
                     ...base,
@@ -203,7 +196,6 @@ export class SingBoxConfigBuilder extends BaseConfigBuilder {
                 return out;
             }
 
-            // ===== NaiveProxy（特定平台可用）=====
             case 'naive': {
                 return {
                     ...base,
@@ -266,8 +258,6 @@ export class SingBoxConfigBuilder extends BaseConfigBuilder {
         }
         this.config.outbounds.push(proxy);
     }
-
-    // ---------- 分组 ----------
 
     addSelectors() {
         const proxyList = this.getProxyList();
@@ -430,8 +420,6 @@ export class SingBoxConfigBuilder extends BaseConfigBuilder {
         this.manualGroupName = manualGroupName;
     }
 
-    // ---------- 路由 ----------
-
     _addRuleSet(ruleSets, tag, url) {
         if (this._seenRuleSets.has(tag)) return;
         ruleSets.push({
@@ -450,7 +438,6 @@ export class SingBoxConfigBuilder extends BaseConfigBuilder {
         route.rules = [];
         this._seenRuleSets = new Set();
 
-        // DNS 规则引用 geolocation-!cn，必须始终存在
         this._addRuleSet(
             route.rule_set,
             'geolocation-!cn',
@@ -520,8 +507,6 @@ export class SingBoxConfigBuilder extends BaseConfigBuilder {
         route.default_domain_resolver = 'dns_resolver';
         return route;
     }
-
-    // ---------- 输出 ----------
 
     formatConfig() {
         this.config.outbounds = this.config.outbounds || [];
