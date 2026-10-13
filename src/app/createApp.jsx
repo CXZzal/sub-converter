@@ -548,6 +548,5 @@ function handleError(c, error, logger) {
         return c.text(error.message, error.status);
     }
     logger.error?.('Unhandled error', error);
-    const stack = error.stack ? `\n\nSTACK:\n${error.stack}` : '';
-    return c.text(`Error: ${error.message}${stack}`, 500);
+    return c.text(`Error: ${error.message}`, 500);
 }
