@@ -33,23 +33,6 @@ const PROXY_TYPES = new Set([
     'wireguard', 'ssh', 'mieru'
 ]);
 
-// Clash 遗留的顶层字段（明确删）
-const CLASH_TOP_LEVEL_JUNK = new Set([
-    'port', 'socks-port', 'redir-port', 'tproxy-port', 'mixed-port',
-    'allow-lan', 'bind-address', 'mode', 'log-level',
-    'external-controller', 'external-ui', 'external-ui-name', 'external-ui-url',
-    'secret', 'ipv6', 'unified-delay', 'tcp-concurrent',
-    'find-process-mode', 'profile', 'geodata-mode', 'geo-auto-update',
-    'geodata-loader', 'geox-url', 'hosts', 'interface-name',
-    'routing-mark', 'keep-alive-interval', 'sniffer', 'cfw-latency-timeout',
-    'cfw-latency-url', 'proxy-providers', 'rule-providers',
-    'proxy-groups', 'proxies', 'rules', 'tun', 'authentication',
-    'skip-auth-prefixes', 'lan-allowed-ips', 'lan-disallowed-ips'
-]);
-
-/**
- * 顶层白名单过滤：只保留 sing-box 认的顶层字段
- */
 function filterTopLevel(config) {
     Object.keys(config).forEach(key => {
         if (!SINGBOX_TOP_LEVEL_KEYS.has(key)) {
@@ -58,9 +41,6 @@ function filterTopLevel(config) {
     });
 }
 
-/**
- * 节点内部字段转换 + 无效字段剔除
- */
 function deepClean(obj) {
     if (Array.isArray(obj)) {
         obj.forEach(deepClean);
@@ -154,24 +134,21 @@ function deepClean(obj) {
     delete obj['grpc-service-name'];
     delete obj.network;
 
-    // Clash 节点级遗留字段（sing-box 不认）
+    // ★★★ 修好的部分：全部用方括号 ★★★
     if (isProxy) {
         delete obj.udp;
         delete obj.tfo;
         delete obj.smux;
-        delete obj.sni;
-        delete obj.servername;
-        delete obj.obfs; // hysteria2 的 obfs 已在 convertProxy 单独处理
-        delete obj.protocol; // 已在 hysteria 单独处理
-        delete obj.up; // 上游 clash 常见字段
+        delete obj.up;
         delete obj.down;
-        delete obj.obfs-param;
-        delete obj.protocol-param;
-        delete obj['obfs-param'];
-        delete obj['protocol-param'];
         delete obj.interface_name;
         delete obj.routing_mark;
         delete obj.ip_version;
+        // 下面两行以前写成 delete obj.obfs-param 是语法 bug，现在改成方括号
+        delete obj['obfs-param'];
+        delete obj['protocol-param'];
+        delete obj['obfs-password'];
+        delete obj['protocol-param'];
     }
 
     // 递归
@@ -183,7 +160,21 @@ function deepClean(obj) {
 }
 
 export class SingboxConfigBuilder extends BaseConfigBuilder {
-    constructor(inputString, selectedRules, customRules, baseConfig, lang, userAgent, groupByCountry, includeAutoSelect = true) {
+    // ★★★ 12 参数版本，对齐 createApp.jsx 的调用 ★★★
+    constructor(
+        inputString,
+        selectedRules,
+        customRules,
+        baseConfig,
+        lang,
+        userAgent,
+        groupByCountry,
+        enableClashUI,           // 忽略（sing-box 不支持 clash UI）
+        externalController,      // 忽略
+        externalUiDownloadUrl,   // 忽略
+        singboxConfigVersion,    // 用于日志
+        includeAutoSelect = true
+    ) {
         super(inputString, baseConfig ?? SING_BOX_CONFIG, lang, userAgent, groupByCountry, includeAutoSelect);
         this.selectedRules = selectedRules;
         this.customRules = customRules;
@@ -191,6 +182,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         this.countryGroupNames = [];
         this.manualGroupName = null;
         this._seenRuleSets = new Set();
+        this.singboxVersion = singboxConfigVersion;
     }
 
     setSubscriptionUrl(url) {
@@ -603,28 +595,9 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         const rules = generateRules(this.selectedRules, this.customRules);
         this.config.route = this.buildRoute(rules);
 
-        // ★★★ 关键 1：顶层白名单过滤（一次干掉所有 Clash 顶层字段）★★★
         filterTopLevel(this.config);
-
-        // ★★★ 关键 2：递归清理节点内部字段 ★★★
         deepClean(this.config);
 
-        // 最终验证：扫描整个 JSON 里还有没有不合法字段
-        const json = JSON.stringify(this.config, null, 2);
-        const suspicious = [
-            '"port"', '"socks-port"', '"redir-port"', '"tproxy-port"',
-            '"mixed-port"', '"allow-lan"', '"external-controller"',
-            '"mode"', '"log-level"', '"sni"', '"skip-cert-verify"',
-            '"alterId"', '"network"'
-        ];
-        suspicious.forEach(field => {
-            const count = (json.match(new RegExp(field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-            if (count > 0) {
-                console.warn(`[SB-BUILD] ⚠️ suspicious field ${field} appears ${count} times`);
-            }
-        });
-        console.log('[SB-BUILD] config built OK, outbounds =', this.config.outbounds.length);
-
-        return json;
+        return JSON.stringify(this.config, null, 2);
     }
 }
