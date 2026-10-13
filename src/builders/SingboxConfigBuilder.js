@@ -1,658 +1,541 @@
-import { SING_BOX_CONFIG, generateRuleSets, generateRules, DIRECT_DEFAULT_RULES, REJECT_ACTION_RULES } from '../config/index.js';
 import { BaseConfigBuilder } from './BaseConfigBuilder.js';
-import { deepCopy, groupProxiesByCountry } from '../utils.js';
-import { addProxyWithDedup } from './helpers/proxyHelpers.js';
-import { buildSelectorMembers as buildSelectorMemberList, buildNodeSelectMembers, buildCustomRuleMembers, uniqueNames } from './helpers/groupBuilder.js';
-import { normalizeGroupName } from './helpers/groupNameUtils.js';
+import { groupProxiesByCountry } from '../utils.js';
+import {
+    SING_BOX_CONFIG,
+    generateRules,
+    getOutbounds,
+    PREDEFINED_RULE_SETS,
+    DIRECT_DEFAULT_RULES,
+    SITE_RULE_SET_BASE_URL,
+    IP_RULE_SET_BASE_URL
+} from '../config/index.js';
+import { uniqueNames } from './helpers/groupBuilder.js';
 
-/**
- * Generates a regular sing-box configuration for SFA / sing-box 1.14+.
- * Airport subscriptions supply nodes only; their top-level client config is
- * intentionally not allowed to overwrite this converter's working template.
- */
-export class SingboxConfigBuilder extends BaseConfigBuilder {
-    constructor(inputString, selectedRules, customRules, baseConfig, lang, userAgent, groupByCountry = false, enableClashUI = false, externalController, externalUiDownloadUrl, singboxVersion = '1.12', includeAutoSelect = true) {
+const RESERVED_OUTBOUND_TYPES = new Set(['direct', 'block', 'selector', 'urltest', 'dns']);
+
+export class SingBoxConfigBuilder extends BaseConfigBuilder {
+    constructor(inputString, selectedRules, customRules, baseConfig, lang, userAgent, groupByCountry, includeAutoSelect = true) {
         super(inputString, baseConfig ?? SING_BOX_CONFIG, lang, userAgent, groupByCountry, includeAutoSelect);
         this.selectedRules = selectedRules;
         this.customRules = customRules;
+        this.subscriptionUrl = null;
         this.countryGroupNames = [];
         this.manualGroupName = null;
-        this.enableClashUI = enableClashUI;
-        this.externalController = externalController;
-        this.externalUiDownloadUrl = externalUiDownloadUrl;
-        this.singboxVersion = singboxVersion;
-
-        // Provider-backed subscriptions are deliberately disabled: every node
-        // is emitted as a normal outbound for broad SFA compatibility.
-        delete this.config.outbound_providers;
-        for (const outbound of this.config.outbounds || []) {
-            if (outbound && typeof outbound === 'object') delete outbound.providers;
-        }
-
-        // In modern sing-box DNS rules that select a server use action=route.
-        this.normalizeDnsRules();
-        if (this.config?.dns?.servers?.length > 0) {
-            this.config.dns.servers[0].detour = this.t('outboundNames.Node Select');
-        }
+        this._seenRuleSets = new Set();
     }
 
-    /** Do not let an airport's Clash/Sing-box config replace our base template. */
-    applyConfigOverrides(overrides) {
-        if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return;
-        const safeOverrides = { ...overrides };
-
-        // Nodes and proxy-groups are extracted separately by BaseConfigBuilder.
-        // Ignore client-level settings from the airport subscription, because
-        // those commonly contain legacy DNS/route/inbound fields.
-                for (const key of [
-            'dns', 'outbounds', 'outbound_providers', 'route',
-            'ntp', 'experimental', 'endpoints', 'services',
-            'certificate_providers', 'providers',
-
-            // Ignore Clash client-level settings that are invalid
-            // in a sing-box configuration.
-            'port', 'socks-port', 'mixed-port', 'redir-port',
-            'tproxy-port', 'allow-lan', 'bind-address',
-            'mode', 'log-level', 'ipv6',
-            'external-controller', 'external-ui', 'external-ui-url',
-            'secret', 'profile', 'hosts', 'tun',
-            'geodata-mode', 'geodata-loader',
-            'geo-auto-update', 'geo-update-interval',
-            'unified-delay', 'tcp-concurrent',
-            'find-process-mode', 'global-client-fingerprint'
-        ]) {
-            delete safeOverrides[key];
-        }
-
-        super.applyConfigOverrides(safeOverrides);
+    setSubscriptionUrl(url) {
+        this.subscriptionUrl = url;
+        return this;
     }
 
-    isCompatibleProviderFormat() {
-        return false;
+    isCompatibleProviderFormat(format) {
+        return format === 'clash' || format === 'singbox';
     }
 
-    normalizeDnsRules() {
-        if (!this.config.dns || typeof this.config.dns !== 'object') this.config.dns = {};
-        if (!Array.isArray(this.config.dns.rules)) this.config.dns.rules = [];
-
-        for (const rule of this.config.dns.rules) {
-            if (rule && typeof rule === 'object' && rule.server && !rule.action) {
-                rule.action = 'route';
-            }
-        }
-    }
+    // ---------- 抽象方法 ----------
 
     getProxies() {
-        return (this.config.outbounds || []).filter(outbound =>
-            outbound && typeof outbound === 'object' && outbound.server !== undefined && outbound.tag
+        return this.config.outbounds || [];
+    }
+
+    getValidProxies() {
+        return (this.config.outbounds || []).filter(p =>
+            p && typeof p === 'object' && p.type && p.tag && !RESERVED_OUTBOUND_TYPES.has(p.type)
         );
     }
 
     getProxyName(proxy) {
-        return proxy.tag;
+        return proxy?.tag;
     }
 
     convertProxy(proxy) {
-        const sanitized = { ...proxy };
-        delete sanitized.udp;
-        // Convert Clash port to sing-box server_port.
-        if (sanitized.server_port === undefined && sanitized.port !== undefined) {
-            sanitized.server_port = sanitized.port;
+        const base = {
+            tag: proxy.tag,
+            server: proxy.server,
+            server_port: proxy.server_port
+        };
+        const tls = this.buildTls(proxy.tls);
+        const transport = this.convertTransport(proxy.transport);
+
+        switch (proxy.type) {
+            case 'shadowsocks': {
+                const out = {
+                    ...base,
+                    type: 'shadowsocks',
+                    method: proxy.method,
+                    password: proxy.password
+                };
+                if (proxy.plugin) {
+                    out.plugin = proxy.plugin;
+                    out.plugin_opts = proxy.plugin_opts;
+                }
+                return out;
+            }
+
+            case 'vmess':
+                return {
+                    ...base,
+                    type: 'vmess',
+                    uuid: proxy.uuid,
+                    alter_id: proxy.alter_id ?? 0,
+                    security: proxy.cipher ?? 'auto',
+                    tls,
+                    transport
+                };
+
+            case 'vless': {
+                const out = {
+                    ...base,
+                    type: 'vless',
+                    uuid: proxy.uuid,
+                    tls,
+                    transport
+                };
+                if (proxy.flow) out.flow = proxy.flow;
+                if (proxy.packet_encoding) out.packet_encoding = proxy.packet_encoding;
+                return out;
+            }
+
+            case 'trojan':
+                return {
+                    ...base,
+                    type: 'trojan',
+                    password: proxy.password,
+                    tls,
+                    transport
+                };
+
+            case 'hysteria2': {
+                const out = {
+                    ...base,
+                    type: 'hysteria2',
+                    password: proxy.password,
+                    tls
+                };
+                if (proxy.obfs) out.obfs = { type: proxy.obfs, password: proxy.obfs_password };
+                if (proxy.up_mbps) out.up_mbps = proxy.up_mbps;
+                if (proxy.down_mbps) out.down_mbps = proxy.down_mbps;
+                // 1.14 新增
+                if (proxy.hop_interval_max) out.hop_interval_max = proxy.hop_interval_max;
+                if (proxy.bbr_profile) out.bbr_profile = proxy.bbr_profile;
+                if (proxy.realm) out.realm = proxy.realm;
+                if (out.obfs) {
+                    if (proxy.obfs_min_packet_size) out.obfs.min_packet_size = proxy.obfs_min_packet_size;
+                    if (proxy.obfs_max_packet_size) out.obfs.max_packet_size = proxy.obfs_max_packet_size;
+                }
+                return out;
+            }
+
+            case 'hysteria': {
+                const out = {
+                    ...base,
+                    type: 'hysteria',
+                    auth_str: proxy.auth_str || proxy.auth,
+                    tls
+                };
+                if (proxy.protocol) out.protocol = proxy.protocol;
+                if (proxy.up_mbps) out.up_mbps = proxy.up_mbps;
+                if (proxy.down_mbps) out.down_mbps = proxy.down_mbps;
+                return out;
+            }
+
+            case 'tuic':
+                return {
+                    ...base,
+                    type: 'tuic',
+                    uuid: proxy.uuid,
+                    password: proxy.password,
+                    congestion_control: proxy.congestion_control,
+                    udp_relay_mode: proxy.udp_relay_mode,
+                    tls
+                };
+
+            case 'http':
+                return {
+                    ...base,
+                    type: 'http',
+                    username: proxy.username,
+                    password: proxy.password,
+                    tls
+                };
+
+            case 'socks5':
+                return {
+                    ...base,
+                    type: 'socks',
+                    username: proxy.username,
+                    password: proxy.password
+                };
+
+            // ===== 1.14 新增：Snell =====
+            case 'snell': {
+                const out = {
+                    ...base,
+                    type: 'snell',
+                    psk: proxy.psk,
+                    version: proxy.version ?? 5
+                };
+                if (proxy.obfs_mode) out.obfs_mode = proxy.obfs_mode;
+                return out;
+            }
+
+            // ===== AnyTLS（1.13+）=====
+            case 'anytls': {
+                return {
+                    ...base,
+                    type: 'anytls',
+                    password: proxy.password,
+                    tls: tls ?? { enabled: true }
+                };
+            }
+
+            // ===== ShadowTLS =====
+            case 'shadowtls': {
+                const out = {
+                    ...base,
+                    type: 'shadowtls',
+                    version: proxy.version ?? 3,
+                    password: proxy.password
+                };
+                if (proxy.sni) out.tls = { enabled: true, server_name: proxy.sni };
+                else if (tls) out.tls = tls;
+                return out;
+            }
+
+            // ===== NaiveProxy（特定平台可用）=====
+            case 'naive': {
+                return {
+                    ...base,
+                    type: 'naive',
+                    username: proxy.username,
+                    password: proxy.password,
+                    tls: tls ?? { enabled: true }
+                };
+            }
+
+            default:
+                return null;
         }
-        delete sanitized.port;
-        // Remove invalid VLESS flow values.
-        if (sanitized.type === 'vless') {
-            const flow = typeof sanitized.flow === 'string'
-                ? sanitized.flow.trim()
-                : '';
+    }
 
-            if (flow === 'xtls-rprx-vision') {
-                sanitized.flow = flow;
-            } else {
-                delete sanitized.flow;
+    buildTls(tlsConf) {
+        if (!tlsConf || !tlsConf.enabled) return undefined;
+        const tls = { enabled: true };
+        if (tlsConf.server_name) tls.server_name = tlsConf.server_name;
+        if (tlsConf.insecure) tls.insecure = true;
+        if (Array.isArray(tlsConf.alpn) && tlsConf.alpn.length) tls.alpn = tlsConf.alpn;
+        if (tlsConf.fingerprint) tls.utls = { enabled: true, fingerprint: tlsConf.fingerprint };
+        return tls;
+    }
+
+    convertTransport(t) {
+        if (!t) return undefined;
+        switch (t.type) {
+            case 'ws': {
+                const ws = { type: 'ws' };
+                if (t.path) ws.path = t.path;
+                if (t.headers) ws.headers = t.headers;
+                if (t.max_early_data) ws.max_early_data = t.max_early_data;
+                if (t.early_data_header_name) ws.early_data_header_name = t.early_data_header_name;
+                return ws;
             }
+            case 'grpc':
+                return { type: 'grpc', service_name: t.service_name };
+            case 'http':
+            case 'h2':
+                return { type: 'http', host: t.host, path: t.path };
+            case 'quic':
+                return { type: 'quic' };
+            default:
+                return undefined;
         }
-
-        // Convert Clash-style Hysteria2 port hopping to sing-box format.
-               // Convert Clash-style Hysteria2 bandwidth fields to sing-box format.
-        if (sanitized.type === 'hysteria2') {
-            if (sanitized.up !== undefined) {
-                sanitized.up_mbps = Number(
-                    String(sanitized.up).replace(/[^0-9.]/g, '')
-                );
-                delete sanitized.up;
-            }
-
-            if (sanitized.down !== undefined) {
-                sanitized.down_mbps = Number(
-                    String(sanitized.down).replace(/[^0-9.]/g, '')
-                );
-                delete sanitized.down;
-            }
-        }
- if (sanitized.type === 'hysteria2' && sanitized.ports !== undefined) {
-            const rawPorts = Array.isArray(sanitized.ports)
-                ? sanitized.ports
-                : String(sanitized.ports).split(',');
-
-            const serverPorts = rawPorts
-                .map(port => String(port).trim())
-                .filter(Boolean)
-                .map(port => port.replace(/^(\d+)\s*-\s*(\d+)$/, '$1:$2'));
-
-            if (serverPorts.length > 0) {
-                sanitized.server_ports = serverPorts;
-                delete sanitized.server_port;
-            }
-
-            // "ports" is not a valid sing-box outbound field.
-            delete sanitized.ports;
-        
-        }
-
-        // Convert Clash WebSocket transport to sing-box format.
-        if (sanitized.network === 'ws') {
-            const wsOpts = sanitized['ws-opts'] || sanitized.ws_opts || {};
-
-            sanitized.transport = {
-                ...(sanitized.transport || {}),
-                type: 'ws'
-            };
-
-            if (wsOpts.path !== undefined) {
-                sanitized.transport.path = wsOpts.path;
-            }
-
-            if (wsOpts.headers && typeof wsOpts.headers === 'object') {
-                sanitized.transport.headers = wsOpts.headers;
-            }
-
-            delete sanitized.network;
-            delete sanitized['ws-opts'];
-            delete sanitized.ws_opts;
-        }       
- if (sanitized.alpn && sanitized.tls) {
-            if (!sanitized.tls.alpn) {
-                sanitized.tls = { ...sanitized.tls, alpn: sanitized.alpn };
-            }
-            delete sanitized.alpn;
-        } else if (sanitized.alpn && !sanitized.tls) {
-            delete sanitized.alpn;
-        }
-
-        // Clash-only setting; sing-box chooses the supported packet encoding.
-        delete sanitized.packet_encoding;
-        delete sanitized.providers;
-        return sanitized;
     }
 
     addProxyToConfig(proxy) {
+        if (!proxy || !proxy.tag) return;
         this.config.outbounds = this.config.outbounds || [];
-
-        addProxyWithDedup(this.config.outbounds, proxy, {
-            getName: item => item?.tag,
-            setName: (item, name) => {
-                if (item) item.tag = name;
-            },
-            isSame: (existing = {}, incoming = {}) => {
-                const { tag: _incomingTag, ...restIncoming } = incoming;
-                const { tag: _existingTag, ...restExisting } = existing;
-
-                return JSON.stringify(restIncoming) === JSON.stringify(restExisting);
+        if (this.config.outbounds.some(o => o.tag === proxy.tag)) {
+            let i = 2;
+            let newTag = `${proxy.tag}_${i}`;
+            while (this.config.outbounds.some(o => o.tag === newTag)) {
+                i++;
+                newTag = `${proxy.tag}_${i}`;
             }
-        });
+            proxy.tag = newTag;
+        }
+        this.config.outbounds.push(proxy);
+    }
+
+    // ---------- 分组 ----------
+
+    addSelectors() {
+        const proxyList = this.getProxyList();
+        this.addCountryGroups();
+        this.addAutoSelectGroup(proxyList);
+        this.addNodeSelectGroup(proxyList);
+        const outbounds = this.getOutboundsList();
+        this.addOutboundGroups(outbounds, proxyList);
+        this.addCustomRuleGroups(proxyList);
+        this.addFallBackGroup(proxyList);
     }
 
     hasOutboundTag(tag) {
-        const target = normalizeGroupName(tag);
-
-        return (this.config.outbounds || []).some(
-            outbound => normalizeGroupName(outbound?.tag) === target
-        );
+        return (this.config.outbounds || []).some(o => o.tag === tag);
     }
 
-    hasAutoSelectCandidates(proxyList = this.getProxyList()) {
-        return Array.isArray(proxyList) && proxyList.length > 0;
+    buildNodeSelectOptions(proxyList) {
+        const options = [];
+        if (this.includeAutoSelect) options.push(this.t('outboundNames.Auto Select'));
+        if (this.manualGroupName) options.push(this.manualGroupName);
+        this.countryGroupNames.forEach(g => options.push(g));
+        proxyList.forEach(p => { if (!options.includes(p)) options.push(p); });
+        if (!options.includes('DIRECT')) options.push('DIRECT');
+        return uniqueNames(options);
     }
 
-    /**
-     * Keep only two generated proxy groups:
-     * manual node selector and automatic URLTest.
-     */
-addSelectors() {
-    // 只保留两个代理组：
-    // 1. 🚀 节点选择 selector
-    // 2. ♻️ 自动选择 urltest
+    buildAggregatedOptions(proxyList) {
+        const options = [];
+        if (this.includeAutoSelect) options.push(this.t('outboundNames.Auto Select'));
+        options.push(this.t('outboundNames.Node Select'));
+        if (this.manualGroupName) options.push(this.manualGroupName);
+        this.countryGroupNames.forEach(g => options.push(g));
+        proxyList.forEach(p => { if (!options.includes(p)) options.push(p); });
+        if (!options.includes('DIRECT')) options.push('DIRECT');
+        return uniqueNames(options);
+    }
 
-    this.config.outbounds = (this.config.outbounds || []).filter(outbound =>
-        outbound &&
-        outbound.type !== 'selector' &&
-        outbound.type !== 'urltest'
-    );
-
-    const proxyList = this.getProxyList();
-
-    this.addAutoSelectGroup(proxyList);
-    this.addNodeSelectGroup(proxyList);
-
-    // 删除机场自带 proxy-groups
-    this.pendingUserProxyGroups = [];
-}
     addAutoSelectGroup(proxyList) {
         if (!this.includeAutoSelect) return;
-
         this.config.outbounds = this.config.outbounds || [];
-
         const tag = this.t('outboundNames.Auto Select');
         if (this.hasOutboundTag(tag)) return;
-
-        const members = deepCopy(uniqueNames(proxyList));
-        if (members.length === 0) return;
-
-        this.config.outbounds.unshift({
+        this.config.outbounds.push({
             type: 'urltest',
             tag,
-            interval: '30m',
-            outbounds: members
+            outbounds: uniqueNames(proxyList),
+            url: 'http://www.gstatic.com/generate_204',
+            interval: '5m',
+            tolerance: 50
         });
     }
 
     addNodeSelectGroup(proxyList) {
         this.config.outbounds = this.config.outbounds || [];
-
         const tag = this.t('outboundNames.Node Select');
         if (this.hasOutboundTag(tag)) return;
-
-        const members = buildNodeSelectMembers({
-            proxyList,
-            translator: this.t,
-            groupByCountry: this.groupByCountry,
-            manualGroupName: this.manualGroupName,
-            countryGroupNames: this.countryGroupNames,
-            includeAutoSelect: this.includeAutoSelect && this.hasAutoSelectCandidates(proxyList),
-            includeReject: false
-        });
-
-        this.config.outbounds.unshift({
+        const options = this.buildNodeSelectOptions(proxyList);
+        this.config.outbounds.push({
             type: 'selector',
             tag,
-            outbounds: members
-        });
-    }
-
-    buildSelectorMembers(proxyList = []) {
-        return buildSelectorMemberList({
-            proxyList,
-            translator: this.t,
-            groupByCountry: this.groupByCountry,
-            manualGroupName: this.manualGroupName,
-            countryGroupNames: this.countryGroupNames,
-            includeAutoSelect: this.includeAutoSelect && this.hasAutoSelectCandidates(proxyList),
-            includeReject: false
+            outbounds: options,
+            default: options[0]
         });
     }
 
     addOutboundGroups(outbounds, proxyList) {
-    // 不生成 Google / Telegram / Netflix 等额外 selector
-    return;
-}
+        this.config.outbounds = this.config.outbounds || [];
+        outbounds.forEach(outbound => {
+            if (outbound === this.t('outboundNames.Node Select')) return;
+            const tag = this.t(`outboundNames.${outbound}`);
+            if (this.hasOutboundTag(tag)) return;
+            let options = this.buildAggregatedOptions(proxyList);
+            if (DIRECT_DEFAULT_RULES.has(outbound)) {
+                options = ['DIRECT', ...options.filter(p => p !== 'DIRECT')];
+            }
+            this.config.outbounds.push({
+                type: 'selector',
+                tag,
+                outbounds: options,
+                default: options[0]
+            });
+        });
+    }
 
     addCustomRuleGroups(proxyList) {
-    // 不生成额外代理组
-    return;
-}
+        if (!Array.isArray(this.customRules)) return;
+        this.config.outbounds = this.config.outbounds || [];
+        this.customRules.forEach(rule => {
+            if (!rule || !rule.name) return;
+            if (this.hasOutboundTag(rule.name)) return;
+            const options = this.buildAggregatedOptions(proxyList);
+            this.config.outbounds.push({
+                type: 'selector',
+                tag: rule.name,
+                outbounds: options,
+                default: options[0]
+            });
+        });
+    }
 
     addFallBackGroup(proxyList) {
-    // 不生成 Fall Back
-    return;
-}
+        this.config.outbounds = this.config.outbounds || [];
+        const tag = this.t('outboundNames.Fall Back');
+        if (this.hasOutboundTag(tag)) return;
+        const options = this.buildAggregatedOptions(proxyList);
+        this.config.outbounds.push({
+            type: 'selector',
+            tag,
+            outbounds: options,
+            default: options[0]
+        });
+    }
 
     addCountryGroups() {
-        const proxies = this.getProxies();
+        const proxies = this.getValidProxies();
+        if (proxies.length === 0) {
+            this.countryGroupNames = [];
+            this.manualGroupName = null;
+            return;
+        }
 
         const countryGroups = groupProxiesByCountry(proxies, {
-            getName: proxy => this.getProxyName(proxy)
+            getName: p => p.tag
         });
 
-        const existingTags = new Set(
-            (this.config.outbounds || [])
-                .map(item => normalizeGroupName(item?.tag))
-                .filter(Boolean)
-        );
+        this.config.outbounds = this.config.outbounds || [];
+        const existing = new Set(this.config.outbounds.map(o => o.tag).filter(Boolean));
 
-        const proxyNames = proxies.map(proxy => proxy?.tag).filter(Boolean);
-
-        const manualGroupName = proxyNames.length
-            ? this.t('outboundNames.Manual Switch')
-            : null;
-
-        if (manualGroupName && !existingTags.has(normalizeGroupName(manualGroupName))) {
+        const manualNames = proxies.map(p => p.tag).filter(Boolean);
+        const manualGroupName = manualNames.length > 0 ? this.t('outboundNames.Manual Switch') : null;
+        if (manualGroupName && !existing.has(manualGroupName)) {
             this.config.outbounds.push({
                 type: 'selector',
                 tag: manualGroupName,
-                outbounds: proxyNames
+                outbounds: uniqueNames(manualNames),
+                default: manualNames[0]
             });
-
-            existingTags.add(normalizeGroupName(manualGroupName));
+            existing.add(manualGroupName);
         }
 
         const countryGroupNames = [];
-
-        Object.keys(countryGroups)
-            .sort((a, b) => a.localeCompare(b))
-            .forEach(country => {
-                const { emoji, name, proxies: countryProxies } = countryGroups[country];
-
-                if (!Array.isArray(countryProxies) || !countryProxies.length) return;
-
-                const tag = `${emoji} ${name}`;
-
-                if (!existingTags.has(normalizeGroupName(tag))) {
-                    this.config.outbounds.push({
-                        type: 'urltest',
-                        tag,
-                        outbounds: countryProxies
-                    });
-
-                    existingTags.add(normalizeGroupName(tag));
-                }
-
-                countryGroupNames.push(tag);
-            });
-
-        const nodeSelect = this.config.outbounds.find(
-            item => normalizeGroupName(item?.tag) ===
-                normalizeGroupName(this.t('outboundNames.Node Select'))
-        );
-
-        if (nodeSelect && Array.isArray(nodeSelect.outbounds)) {
-            nodeSelect.outbounds = buildNodeSelectMembers({
-                proxyList: [],
-                translator: this.t,
-                groupByCountry: true,
-                manualGroupName,
-                countryGroupNames,
-                includeAutoSelect: this.includeAutoSelect && this.hasAutoSelectCandidates(),
-                includeReject: false
-            });
-        }
+        Object.keys(countryGroups).sort((a, b) => a.localeCompare(b)).forEach(country => {
+            const { emoji, name, proxies: tags } = countryGroups[country];
+            const groupName = `${emoji} ${name}`;
+            countryGroupNames.push(groupName);
+            if (!existing.has(groupName)) {
+                this.config.outbounds.push({
+                    type: 'urltest',
+                    tag: groupName,
+                    outbounds: uniqueNames(tags),
+                    url: 'https://www.gstatic.com/generate_204',
+                    interval: '5m',
+                    tolerance: 50
+                });
+                existing.add(groupName);
+            }
+        });
 
         this.countryGroupNames = countryGroupNames;
         this.manualGroupName = manualGroupName;
     }
 
-    mergeUserProxyGroups(userGroups) {
-        // Ignore airport proxy-groups.
-        // The converter only keeps its own generated groups.
-        return;
+    // ---------- 路由 ----------
+
+    _addRuleSet(ruleSets, tag, url) {
+        if (this._seenRuleSets.has(tag)) return;
+        ruleSets.push({
+            type: 'remote',
+            tag,
+            format: 'binary',
+            url,
+            download_detour: 'DIRECT'
+        });
+        this._seenRuleSets.add(tag);
     }
 
-    validateOutbounds() {
-        const proxyList = this.getProxyList();
-        const invalidTags = new Set();
+    buildRoute(rules) {
+        const route = {};
+        route.rule_set = [];
+        route.rules = [];
+        this._seenRuleSets = new Set();
 
-        (this.config.outbounds || []).forEach(outbound => {
-            if (!outbound || (outbound.type !== 'urltest' && outbound.type !== 'selector')) {
-                return;
+        // DNS 规则引用 geolocation-!cn，必须始终存在
+        this._addRuleSet(
+            route.rule_set,
+            'geolocation-!cn',
+            `${SITE_RULE_SET_BASE_URL}geolocation-!cn.srs`
+        );
+
+        rules.forEach(rule => {
+            const outbound = this.t('outboundNames.' + rule.outbound);
+
+            if (Array.isArray(rule.src_ip_cidr) && rule.src_ip_cidr.length) {
+                rule.src_ip_cidr.forEach(cidr => {
+                    const v = typeof cidr === 'string' ? cidr.trim() : cidr;
+                    if (!v) return;
+                    route.rules.push({ source_ip_cidr: [v], outbound });
+                });
             }
 
-            delete outbound.providers;
+            if (Array.isArray(rule.domain_suffix) && rule.domain_suffix.length) {
+                route.rules.push({
+                    domain_suffix: rule.domain_suffix.filter(Boolean),
+                    outbound
+                });
+            }
 
-            if (!Array.isArray(outbound.outbounds) || outbound.outbounds.length === 0) {
-                if (proxyList.length) {
-                    outbound.outbounds = [...proxyList];
-                } else {
-                    invalidTags.add(normalizeGroupName(outbound.tag));
-                }
+            if (Array.isArray(rule.domain_keyword) && rule.domain_keyword.length) {
+                route.rules.push({
+                    domain_keyword: rule.domain_keyword.filter(Boolean),
+                    outbound
+                });
+            }
+
+            if (Array.isArray(rule.site_rules) && rule.site_rules.length) {
+                rule.site_rules.forEach(site => {
+                    if (!site) return;
+                    this._addRuleSet(
+                        route.rule_set,
+                        site,
+                        `${SITE_RULE_SET_BASE_URL}${site}.srs`
+                    );
+                    route.rules.push({ rule_set: [site], outbound });
+                });
+            }
+
+            if (Array.isArray(rule.ip_rules) && rule.ip_rules.length) {
+                rule.ip_rules.forEach(ip => {
+                    if (!ip) return;
+                    const tag = `${ip}-ip`;
+                    this._addRuleSet(
+                        route.rule_set,
+                        tag,
+                        `${IP_RULE_SET_BASE_URL}${ip}.srs`
+                    );
+                    route.rules.push({ rule_set: [tag], outbound });
+                });
+            }
+
+            if (Array.isArray(rule.ip_cidr) && rule.ip_cidr.length) {
+                route.rules.push({
+                    ip_cidr: rule.ip_cidr.filter(Boolean),
+                    outbound
+                });
             }
         });
 
-        if (invalidTags.size) {
-            this.config.outbounds = (this.config.outbounds || [])
-                .filter(outbound => !invalidTags.has(normalizeGroupName(outbound?.tag)))
-                .map(outbound => {
-                    if (Array.isArray(outbound.outbounds)) {
-                        outbound.outbounds = outbound.outbounds.filter(
-                            tag => !invalidTags.has(normalizeGroupName(tag))
-                        );
-                    }
-
-                    return outbound;
-                });
-        }
+        route.final = this.t('outboundNames.Fall Back');
+        route.auto_detect_interface = true;
+        route.default_domain_resolver = 'dns_resolver';
+        return route;
     }
 
-    sanitizeLegacySpecialOutbounds() {
-        const legacyTags = new Set(
-            (this.config.outbounds || [])
-                .filter(outbound => outbound?.type === 'block' || outbound?.type === 'dns')
-                .map(outbound => normalizeGroupName(outbound?.tag))
-                .filter(Boolean)
-        );
-
-        legacyTags.add(normalizeGroupName('REJECT'));
-
-        this.config.outbounds = (this.config.outbounds || [])
-            .filter(outbound => !legacyTags.has(normalizeGroupName(outbound?.tag)))
-            .map(outbound => {
-                delete outbound.providers;
-
-                if (Array.isArray(outbound.outbounds)) {
-                    outbound.outbounds = outbound.outbounds.filter(
-                        tag => !legacyTags.has(normalizeGroupName(tag))
-                    );
-                }
-
-                return outbound;
-            })
-            .filter(outbound => {
-                if (outbound?.type !== 'selector' && outbound?.type !== 'urltest') {
-                    return true;
-                }
-
-                return Array.isArray(outbound.outbounds) && outbound.outbounds.length > 0;
-            });
-    }
-
-    buildRouteTarget(rule) {
-        if (
-            REJECT_ACTION_RULES.has(rule?.outbound) ||
-            rule?.outbound === 'REJECT'
-        ) {
-            return { action: 'reject' };
-        }
-
-        if (
-            DIRECT_DEFAULT_RULES.has(rule?.outbound) ||
-            rule?.outbound === 'DIRECT' ||
-            rule?.outbound === 'direct'
-        ) {
-            return { outbound: 'DIRECT' };
-        }
-
-        return {
-            outbound: this.t('outboundNames.Node Select')
-        };
-    }
+    // ---------- 输出 ----------
 
     formatConfig() {
+        this.config.outbounds = this.config.outbounds || [];
+
+        if (!this.config.outbounds.some(o => o.tag === 'DIRECT')) {
+            this.config.outbounds.push({ type: 'direct', tag: 'DIRECT' });
+        }
+        if (!this.config.outbounds.some(o => o.tag === 'REJECT')) {
+            this.config.outbounds.push({ type: 'block', tag: 'REJECT' });
+        }
+
         const rules = generateRules(this.selectedRules, this.customRules);
-        const { site_rule_sets, ip_rule_sets } = generateRuleSets(
-            this.selectedRules,
-            this.customRules
-        );
+        this.config.route = this.buildRoute(rules);
 
-        this.config.route = this.config.route || {};
-        this.config.route.rules = Array.isArray(this.config.route.rules)
-            ? this.config.route.rules
-            : [];
-
-        this.config.route.rule_set = [...site_rule_sets, ...ip_rule_sets];
-
-        this.normalizeDnsRules();
-
-        const attachProtocolIfNeeded = (entry, rule) => {
-            if (Array.isArray(rule?.protocol) && rule.protocol.length) {
-                entry.protocol = rule.protocol;
-            }
-
-            return entry;
-        };
-
-        const hasMatchValues = value => Array.isArray(value)
-            ? value.length > 0
-            : typeof value === 'string' && value.trim() !== '';
-
-        rules
-            .filter(rule => Array.isArray(rule.src_ip_cidr) && rule.src_ip_cidr.length)
-            .forEach(rule => {
-                this.config.route.rules.push(
-                    attachProtocolIfNeeded({
-                        source_ip_cidr: rule.src_ip_cidr,
-                        ...this.buildRouteTarget(rule)
-                    }, rule)
-                );
-            });
-
-        rules
-            .filter(rule => hasMatchValues(rule.domain_suffix) || hasMatchValues(rule.domain_keyword))
-            .forEach(rule => {
-                const entry = { ...this.buildRouteTarget(rule) };
-
-                if (hasMatchValues(rule.domain_suffix)) {
-                    entry.domain_suffix = rule.domain_suffix;
-                }
-
-                if (hasMatchValues(rule.domain_keyword)) {
-                    entry.domain_keyword = rule.domain_keyword;
-                }
-
-                this.config.route.rules.push(attachProtocolIfNeeded(entry, rule));
-            });
-
-        rules
-            .filter(rule => !!rule.site_rules?.[0])
-            .forEach(rule => {
-                this.config.route.rules.push(
-                    attachProtocolIfNeeded({
-                        rule_set: rule.site_rules.filter(Boolean),
-                        ...this.buildRouteTarget(rule)
-                    }, rule)
-                );
-            });
-
-        rules
-            .filter(rule => !!rule.ip_rules?.[0])
-            .forEach(rule => {
-                this.config.route.rules.push(
-                    attachProtocolIfNeeded({
-                        rule_set: rule.ip_rules
-                            .map(ip => ip.trim())
-                            .filter(Boolean)
-                            .map(ip => `${ip}-ip`),
-                        ...this.buildRouteTarget(rule)
-                    }, rule)
-                );
-            });
-
-        rules
-            .filter(rule => hasMatchValues(rule.ip_cidr))
-            .forEach(rule => {
-                this.config.route.rules.push(
-                    attachProtocolIfNeeded({
-                        ip_cidr: rule.ip_cidr,
-                        ...this.buildRouteTarget(rule)
-                    }, rule)
-                );
-            });
-
-        this.config.route.rules.unshift(
-            { clash_mode: 'direct', outbound: 'DIRECT' },
-            { clash_mode: 'global', outbound: this.t('outboundNames.Node Select') },
-            { action: 'sniff' },
-            { protocol: 'dns', action: 'hijack-dns' }
-        );
-
-        this.config.route.auto_detect_interface = true;
-        this.config.route.final = this.t('outboundNames.Node Select');
-
-        // Keep the subscription TUN stack when SFA can use it.
-        // This SFA build does not include gVisor.
-        // Convert unsupported gvisor/mixed stack to system.
-        const tun = (this.config.inbounds || []).find(item => item?.type === 'tun');
-        if (tun && (tun.stack === 'gvisor' || tun.stack === 'mixed')) {
-            tun.stack = 'system';
-        }
-
-        // sing-box 1.14+ requires an explicit HTTP client for remote rule-set downloads.
-        // Route these downloads through the same selectable proxy group as before.
-        const ruleSetHttpClientTag = 'rule-set-client';
-        this.config.http_clients = Array.isArray(this.config.http_clients)
-            ? this.config.http_clients
-            : [];
-        const existingRuleSetHttpClient = this.config.http_clients.find(
-            client => client?.tag === ruleSetHttpClientTag
-        );
-        if (existingRuleSetHttpClient) {
-            existingRuleSetHttpClient.detour = this.t('outboundNames.Node Select');
-        } else {
-            this.config.http_clients.push({
-                tag: ruleSetHttpClientTag,
-                detour: this.t('outboundNames.Node Select')
-            });
-        }
-        this.config.route.default_http_client = ruleSetHttpClientTag;
-
-        this.validateOutbounds();
-        this.sanitizeLegacySpecialOutbounds()
-
-
-        // 最终强制只保留两个代理组，普通节点出站不受影响。
-        const nodeSelectTag = normalizeGroupName(this.t('outboundNames.Node Select'));
-        const autoSelectTag = normalizeGroupName(this.t('outboundNames.Auto Select'));
-        const keptGroupTags = new Set();
-
-        this.config.outbounds = (this.config.outbounds || []).filter(outbound => {
-            if (!outbound || (outbound.type !== 'selector' && outbound.type !== 'urltest')) {
-                return true;
-            }
-
-            const tag = normalizeGroupName(outbound.tag);
-            const allowedType = tag === nodeSelectTag
-                ? 'selector'
-                : tag === autoSelectTag
-                    ? 'urltest'
-                    : null;
-
-            if (!allowedType || outbound.type !== allowedType || keptGroupTags.has(tag)) {
-                return false;
-            }
-
-            keptGroupTags.add(tag);
-            return true;
-        });
-
-        delete this.config.outbound_providers;
-
-        for (const outbound of this.config.outbounds || []) {
-            delete outbound.providers;
-        }
-
-        if (this.enableClashUI || this.externalController || this.externalUiDownloadUrl) {
-            const existing = this.config.experimental?.clash_api || {};
-
-            this.config.experimental = this.config.experimental || {};
-            this.config.experimental.clash_api = {
-                ...existing,
-                external_controller: this.externalController || existing.external_controller || '0.0.0.0:9090',
-                external_ui: existing.external_ui || './ui',
-                external_ui_download_url: this.externalUiDownloadUrl || existing.external_ui_download_url || 'https://gh-proxy.com/https://github.com/Zephyruso/zashboard/archive/refs/heads/gh-pages.zip',
-                external_ui_download_detour: existing.external_ui_download_detour || 'DIRECT',
-                secret: existing.secret ?? '',
-                default_mode: existing.default_mode || 'rule'
-            };
-        }
-
-        return this.config;
+        return JSON.stringify(this.config, null, 2);
     }
 }
