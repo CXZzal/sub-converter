@@ -12,6 +12,110 @@ import { uniqueNames } from './helpers/groupBuilder.js';
 
 const RESERVED_OUTBOUND_TYPES = new Set(['direct', 'block', 'selector', 'urltest', 'dns']);
 
+/**
+ * 把 Clash/Surge 遗留字段转换成 sing-box 格式，不丢功能
+ */
+function normalizeOutbound(obj) {
+    if (Array.isArray(obj)) {
+        obj.forEach(normalizeOutbound);
+        return;
+    }
+    if (!obj || typeof obj !== 'object') return;
+
+    // 1) port → server_port
+    if (obj.port !== undefined && obj.server_port === undefined) {
+        obj.server_port = obj.port;
+    }
+    delete obj.port;
+
+    // 2) sni / servername → tls.server_name
+    const sniValue = obj.sni || obj.servername;
+    if (sniValue) {
+        obj.tls = obj.tls || { enabled: true };
+        if (!obj.tls.server_name) obj.tls.server_name = sniValue;
+    }
+    delete obj.sni;
+    delete obj.servername;
+
+    // 3) skip-cert-verify / allowInsecure → tls.insecure
+    const insecureValue = obj['skip-cert-verify'] ?? obj.skip_cert_verify ?? obj.allowInsecure;
+    if (insecureValue === true) {
+        obj.tls = obj.tls || { enabled: true };
+        obj.tls.insecure = true;
+    }
+    delete obj['skip-cert-verify'];
+    delete obj.skip_cert_verify;
+    delete obj.allowInsecure;
+
+    // 4) alpn（顶层）→ tls.alpn
+    if (obj.alpn && !obj.tls?.alpn) {
+        obj.tls = obj.tls || { enabled: true };
+        obj.tls.alpn = Array.isArray(obj.alpn) ? obj.alpn : [obj.alpn];
+        delete obj.alpn;
+    }
+
+    // 5) fingerprint（顶层）→ tls.utls.fingerprint
+    if (obj.fingerprint) {
+        obj.tls = obj.tls || { enabled: true };
+        if (!obj.tls.utls) obj.tls.utls = { enabled: true };
+        obj.tls.utls.fingerprint = obj.fingerprint;
+        delete obj.fingerprint;
+    }
+
+    // 6) alterId → alter_id
+    if (obj.alterId !== undefined && obj.alter_id === undefined) {
+        obj.alter_id = obj.alterId;
+    }
+    delete obj.alterId;
+
+    // 7) cipher → vmess 的 security
+    if (obj.type === 'vmess' && obj.cipher !== undefined && obj.security === undefined) {
+        obj.security = obj.cipher;
+    }
+    delete obj.cipher;
+
+    // 8) network 字段（Clash）→ transport
+    if (obj.network && !obj.transport) {
+        const n = obj.network;
+        if (n === 'ws') {
+            obj.transport = { type: 'ws' };
+            if (obj['ws-path']) obj.transport.path = obj['ws-path'];
+            if (obj['ws-headers']) obj.transport.headers = obj['ws-headers'];
+        } else if (n === 'grpc') {
+            obj.transport = { type: 'grpc' };
+            if (obj['grpc-service-name']) obj.transport.service_name = obj['grpc-service-name'];
+        } else if (n === 'h2' || n === 'http') {
+            obj.transport = { type: 'http' };
+            if (obj.host) obj.transport.host = Array.isArray(obj.host) ? obj.host : [obj.host];
+            if (obj.path) obj.transport.path = obj.path;
+        }
+    }
+
+    // 9) 补全 transport 里缺的字段
+    if (obj.transport) {
+        if (obj['ws-path'] && !obj.transport.path) obj.transport.path = obj['ws-path'];
+        if (obj['ws-headers'] && !obj.transport.headers) obj.transport.headers = obj['ws-headers'];
+        if (obj['grpc-service-name'] && !obj.transport.service_name) {
+            obj.transport.service_name = obj['grpc-service-name'];
+        }
+    }
+    delete obj['ws-path'];
+    delete obj['ws-headers'];
+    delete obj['grpc-service-name'];
+    delete obj.network;
+
+    // 10) 真不能保留的：udp（sing-box 由协议决定）、tfo（不支持）
+    delete obj.udp;
+    delete obj.tfo;
+
+    // 递归处理子对象
+    Object.keys(obj).forEach(key => {
+        if (obj[key] && typeof obj[key] === 'object') {
+            normalizeOutbound(obj[key]);
+        }
+    });
+}
+
 export class SingboxConfigBuilder extends BaseConfigBuilder {
     constructor(inputString, selectedRules, customRules, baseConfig, lang, userAgent, groupByCountry, includeAutoSelect = true) {
         super(inputString, baseConfig ?? SING_BOX_CONFIG, lang, userAgent, groupByCountry, includeAutoSelect);
@@ -50,7 +154,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         const base = {
             tag: proxy.tag,
             server: proxy.server,
-            server_port: proxy.server_port
+            server_port: proxy.server_port ?? proxy.port
         };
         const tls = this.buildTls(proxy.tls);
         const transport = this.convertTransport(proxy.transport);
@@ -231,6 +335,7 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
     addProxyToConfig(proxy) {
         if (!proxy || !proxy.tag) return;
+        normalizeOutbound(proxy);
         this.config.outbounds = this.config.outbounds || [];
         if (this.config.outbounds.some(o => o.tag === proxy.tag)) {
             let i = 2;
@@ -244,17 +349,11 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         this.config.outbounds.push(proxy);
     }
 
-    // ============ 精简版：只建 3 类组 ============
-    // 1. 节点选择（总 selector）
-    // 2. 自动选择（urltest）
-    // 3. 地区分组（urltest）—— 当快捷方式用
     addSelectors() {
         const proxyList = this.getProxyList();
         this.addCountryGroups();
         this.addAutoSelectGroup(proxyList);
         this.addNodeSelectGroup(proxyList);
-        // 不再生成 私有网络 / 国内服务 / 非中国 / 漏网之鱼 / AI / 油管 等独立组
-        // 它们在 buildRoute 里会直接映射到 DIRECT 或 节点选择
     }
 
     hasOutboundTag(tag) {
@@ -281,7 +380,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         const tag = this.t('outboundNames.Node Select');
         if (this.hasOutboundTag(tag)) return;
 
-        // 选项顺序：自动选择 → 各地区 → 所有节点 → DIRECT
         const options = [];
         if (this.includeAutoSelect) options.push(this.t('outboundNames.Auto Select'));
         this.countryGroupNames.forEach(g => options.push(g));
@@ -332,9 +430,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         this.countryGroupNames = countryGroupNames;
     }
 
-    // ============ 规则 outbound 映射 ============
-    // 私有网络 / 国内服务 → DIRECT
-    // 其它 → 节点选择
     _resolveRuleOutbound(ruleOutbound) {
         if (DIRECT_DEFAULT_RULES.has(ruleOutbound)) {
             return 'DIRECT';
@@ -432,6 +527,8 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
 
     formatConfig() {
         this.config.outbounds = this.config.outbounds || [];
+
+        this.config.outbounds.forEach(normalizeOutbound);
 
         if (!this.config.outbounds.some(o => o.tag === 'DIRECT')) {
             this.config.outbounds.push({ type: 'direct', tag: 'DIRECT' });
