@@ -18,7 +18,7 @@ import { ServiceError, MissingDependencyError } from '../services/errors.js';
 import { normalizeRuntime } from '../runtime/runtimeConfig.js';
 import { PREDEFINED_RULE_SETS, SING_BOX_CONFIG, SING_BOX_CONFIG_V1_11, generateSubconverterConfig } from '../config/index.js';
 
-const DEFAULT_USER_AGENT = 'curl/7.74.0';
+const DEFAULT_USER_AGENT = 'mihomo/1.19.0';
 
 export function createApp(bindings = {}) {
     const runtime = normalizeRuntime(bindings);
