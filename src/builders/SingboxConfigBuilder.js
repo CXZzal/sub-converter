@@ -24,6 +24,9 @@ const PROXY_TYPES = new Set([
     'wireguard', 'ssh', 'mieru'
 ]);
 
+// ★★★ Global 模式开关：true = 全部走代理，false = 正常分流 ★★★
+const GLOBAL_MODE = true;
+
 function filterTopLevel(config) {
     Object.keys(config).forEach(key => {
         if (!SINGBOX_TOP_LEVEL_KEYS.has(key)) {
@@ -32,7 +35,6 @@ function filterTopLevel(config) {
     });
 }
 
-// 把 "100 Mbps" / "100 mbps" / 100 / "100" 解析成数字
 function parseMbps(value) {
     if (value === undefined || value === null) return undefined;
     if (typeof value === 'number') return value;
@@ -136,7 +138,6 @@ function deepClean(obj) {
         delete obj.ip_version;
         delete obj['obfs-param'];
         delete obj['protocol-param'];
-        // 注意：不再删 obfs-password / up / down，因为 convertProxy 里不再依赖它们
     }
 
     Object.keys(obj).forEach(key => {
@@ -248,7 +249,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     transport
                 };
 
-            // ★★★ 修复：hysteria2 的 obfs / up / down ★★★
             case 'hysteria2': {
                 const out = {
                     ...base,
@@ -257,7 +257,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     tls
                 };
 
-                // obfs：可能是字符串（旧格式）或对象（convertYamlProxyToObject 输出）
                 if (proxy.obfs) {
                     if (typeof proxy.obfs === 'string') {
                         out.obfs = { type: proxy.obfs };
@@ -268,7 +267,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                     }
                 }
 
-                // up / down：可能在 up_mbps 也可能是 up 字段
                 const upMbps = parseMbps(proxy.up_mbps ?? proxy.up);
                 const downMbps = parseMbps(proxy.down_mbps ?? proxy.down);
                 if (upMbps !== undefined) out.up_mbps = upMbps;
@@ -338,7 +336,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
                 return out;
             }
 
-            // ★★★ 修复：anytls 字段名转下划线 ★★★
             case 'anytls': {
                 const out = {
                     ...base,
@@ -386,7 +383,6 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         if (tlsConf.insecure) tls.insecure = true;
         if (Array.isArray(tlsConf.alpn) && tlsConf.alpn.length) tls.alpn = tlsConf.alpn;
         if (tlsConf.fingerprint) tls.utls = { enabled: true, fingerprint: tlsConf.fingerprint };
-        // 保留 reality 结构（vless / trojan 可能带）
         if (tlsConf.reality) tls.reality = tlsConf.reality;
         return tls;
     }
@@ -535,6 +531,24 @@ export class SingboxConfigBuilder extends BaseConfigBuilder {
         route.rules = [];
         this._seenRuleSets = new Set();
 
+        // ★★★ Global 模式：所有流量全部走代理 ★★★
+        if (GLOBAL_MODE) {
+            this._addRuleSet(
+                route.rule_set,
+                'geolocation-!cn',
+                `${SITE_RULE_SET_BASE_URL}geolocation-!cn.srs`
+            );
+            route.rules.push({
+                action: 'route',
+                outbound: this.t('outboundNames.Node Select')
+            });
+            route.final = this.t('outboundNames.Node Select');
+            route.auto_detect_interface = true;
+            route.default_domain_resolver = 'dns_resolver';
+            return route;
+        }
+
+        // ===== 正常分流模式 =====
         this._addRuleSet(
             route.rule_set,
             'geolocation-!cn',
